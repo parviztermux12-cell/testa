@@ -9058,13 +9058,12 @@ def format_hand(hand, hide_second=False):
 
 # ================== КЛАВИАТУРА ==================
 def bj_action_keyboard(user_id, game_id, can_double=True):
-    kb = InlineKeyboardMarkup(row_width=3)
-    buttons = [
-        InlineKeyboardButton("🎯 Взять", callback_data=f"bj_hit_{user_id}_{game_id}"),
-        InlineKeyboardButton("🛑 Оставить", callback_data=f"bj_stand_{user_id}_{game_id}"),
-        InlineKeyboardButton("🏳️ Сдаться", callback_data=f"bj_surrender_{user_id}_{game_id}")
-    ]
-    kb.add(*buttons)
+    kb = InlineKeyboardMarkup(row_width=1)  # Вертикальное расположение
+    
+    # Каждую кнопку добавляем отдельно
+    kb.add(InlineKeyboardButton("🎯 Взять", callback_data=f"bj_hit_{user_id}_{game_id}"))
+    kb.add(InlineKeyboardButton("🛑 Оставить", callback_data=f"bj_stand_{user_id}_{game_id}"))
+    kb.add(InlineKeyboardButton("🏳️ Сдаться", callback_data=f"bj_surrender_{user_id}_{game_id}"))
     
     if can_double:
         kb.add(InlineKeyboardButton("💹 Удвоить", callback_data=f"bj_double_{user_id}_{game_id}"))
@@ -9073,7 +9072,7 @@ def bj_action_keyboard(user_id, game_id, can_double=True):
 
 # ================== АКТИВНЫЕ ИГРЫ ==================
 active_blackjack_games = {}
-BLACKJACK_IMAGE_URL = "https://i.supaimg.com/d55f9fad-17e9-4723-8cd8-4258944b667f/fc07259f-695e-4d75-a365-2e76cca30464.png"  # ФЕЙКОВАЯ ССЫЛКА - ЗАМЕНИТЬ ПОТОМ!
+BLACKJACK_IMAGE_URL = "https://i.supaimg.com/d55f9fad-17e9-4723-8cd8-4258944b667f/fc07259f-695e-4d75-a365-2e76cca30464.png"
 
 # ================== СТАРТ ИГРЫ ==================
 def start_blackjack_game(user_data, user_id, bet):
@@ -9151,19 +9150,19 @@ def format_blackjack_message(game_id):
     # Формируем текст
     text = f"{suit_symbol} <b>{mention}, {status}</b> {emoji}\n"
     text += "·····················\n"
-    text += f"💶 Ставка: {format_number(game['bet'])} ezzzy\n"
+    text += f"💶 Ставка: {format_number(game['bet'])} \n"
     
     # Выигрыш
     if game["status"] == "win":
         win_amount = game['bet'] * 2
-        text += f"📊 Выигрыш: {format_number(win_amount)} ezzzy\n"
+        text += f"📊 Выигрыш: {format_number(win_amount)}$\n"
     elif game["status"] == "blackjack":
         win_amount = int(game['bet'] * 2.5)
-        text += f"📊 Выигрыш: {format_number(win_amount)} ezzzy 🎯\n"
+        text += f"📊 Выигрыш: {format_number(win_amount)}$ 🎯\n"
     elif game["status"] == "push":
-        text += f"📊 Возврат: {format_number(game['bet'])} ezzzy\n"
+        text += f"📊 Возврат: {format_number(game['bet'])}$\n"
     elif game["status"] == "surrender":
-        text += f"📊 Возврат: {format_number(game['bet']//2)} ezzzy\n"
+        text += f"📊 Возврат: {format_number(game['bet']//2)}$\n"
     else:
         text += f"📊 Выигрыш: —\n"
     
@@ -18489,8 +18488,7 @@ def roulette_number_choice(message):
 # ================== AI КОМАНДА (АНТИ-НУДНАЯ, С ПАМЯТЬЮ И ШУТКАМИ) ==================
 @bot.message_handler(func=lambda m: m.text and (m.text.lower().startswith(".ai ") or
                                                (m.reply_to_message and
-                                                m.reply_to_message.from_user.id == bot.get_me().id and
-                                                not m.text.startswith("/"))))
+                                                m.reply_to_message.from_user.id == bot.get_me().id)))
 def cmd_ai(message):
     try:
         user_id = message.from_user.id
@@ -18500,19 +18498,29 @@ def cmd_ai(message):
         if message.text.lower().startswith(".ai "):
             # Явный вызов через команду
             prompt = message.text.split(maxsplit=1)[1].strip()
-        elif message.reply_to_message and message.reply_to_message.from_user.id == bot.get_me().id:
-            # Ответ на сообщение бота — берём текст ответа как продолжение
-            prompt = f"Продолжи диалог. Предыдущий запрос: '{message.reply_to_message.text}'. Новое сообщение от {user_name}: '{message.text}'"
+            if not prompt:
+                bot.reply_to(message, "📝 А че писать то? Пустоту генерить?", parse_mode="HTML")
+                return
         else:
-            return  # Маловероятно, но на всякий случай
+            # РЕПЛАЙ НА БОТА — это диалог, а не приветствие
+            # Берём текст сообщения пользователя как запрос
+            prompt = message.text.strip()
+            
+            # Добавляем контекст, если есть сохранённая история
+            if hasattr(bot, "ai_messages") and str(message.reply_to_message.message_id) in bot.ai_messages:
+                prev_data = bot.ai_messages[str(message.reply_to_message.message_id)]
+                prev_prompt = prev_data.get("prompt", "")
+                # Ограничиваем длину, чтоб не перегружать
+                if len(prev_prompt) > 200:
+                    prev_prompt = prev_prompt[:200] + "..."
+                prompt = f"Диалог. Предыдущий контекст: {prev_prompt}. Теперь {user_name} пишет: '{prompt}'. Ответь кратко."
+            else:
+                # Просто ответ на сообщение бота без контекста
+                prompt = f"{user_name} ответил на твоё сообщение: '{prompt}'. Ответь кратко и с юмором."
 
-        if not prompt:
-            bot.reply_to(message, "📝 А че писать то? Пустоту генерить?", parse_mode="HTML")
-            return
-
-        # 2. КОРОТКИЕ ОТВЕТЫ НА ПРИВЕТСТВИЯ (без AI)
+        # 2. КОРОТКИЕ ОТВЕТЫ НА ПРИВЕТСТВИЯ (ТОЛЬКО ДЛЯ .ai КОМАНДЫ)
         hello_check = prompt.lower()
-        if any(word in hello_check for word in ["привет", "здарова", "ку", "салам", "хай", "hello", "здрасте"]):
+        if message.text.lower().startswith(".ai ") and any(word in hello_check for word in ["привет", "здарова", "ку", "салам", "хай", "hello", "здрасте"]):
             replies = [
                 f"👋 О, {user_name}, ящетаю!",
                 f"🤝 Здарова, {user_name}. Че хотел?",
@@ -18527,16 +18535,19 @@ def cmd_ai(message):
         # 3. ФИКСИРОВАННАЯ ЛИЧНОСТЬ
         system_prompt = (
             "Ты — Meow Game AI. Тебя создал @parvizwp. Ты общаешься в игровом чат-боте. "
-            "Тебе **запрещено** быть скучным, официалным или вежливым. "
-            "Твои правила: 1) Отвечай **МАКСИМУМ 1-2 ПРЕДЛОЖЕНИЯМИ**. 2) Используй эмодзи (😼,🔥,💸,🤡,🫵,⚡️,🦦,🧃,💅). "
-            "3) Используй лёгкую форму шутливого мата (блин, чёрт, ёмаё, блэт, капец, жесть) — не по-настоящему мат, а 'междометия'. "
-            "4) Если собеседник тупит — можешь назвать его 'даунёнок', 'додик', 'тормоз', 'малыш', 'солнце' (в шутку). "
-            "5) Если спрашивают про тебя: 'Я Meow AI, личный шиз-помощник Парвиза'. "
+            "Тебе **запрещено** быть скучным, официальным или вежливым. "
+            "Твои правила: "
+            "1) Отвечай **МАКСИМУМ 1-2 ПРЕДЛОЖЕНИЯМИ**. НИКАКИХ ПРОСТЫНЬ ТЕКСТА. "
+            "2) Используй эмодзи (😼,🔥,💸,🤡,🫵,⚡️,🦦,🧃,💅,👾,🎰,💊,🧨). "
+            "3) Используй лёгкую форму шутливого мата (блин, чёрт, ёмаё, блэт, капец, жесть, твою ж дивизию, ёпт) — не по-настоящему мат, а междометия. "
+            "4) Если собеседник тупит — можешь назвать его 'даунёнок', 'додик', 'тормоз', 'малыш', 'солнце', 'братишка' (в шутку). "
+            "5) Если спрашивают про тебя: 'Я Meow AI, личный шиз-помощник Парвиза. Бабки варганю, игроков развожу'. "
             "6) Ты фанат денег (💸), игр и понтов. Ты дерзкий, но не злой. "
-            "7) **НЕ ПИШИ ДЛИННЫЕ ПОЯСНЕНИЯ. ТЫ НЕ ЭНЦИКЛОПЕДИЯ, А СОБЕСЕДНИК.**"
+            "7) **НИКАКИХ ДЛИННЫХ ПОЯСНЕНИЙ. ТЫ НЕ ЭНЦИКЛОПЕДИЯ, А СОБЕСЕДНИК.** "
+            "8) Если в вопросе есть '?', значит тебя о чём-то спросили — отвечай прямо и без воды."
         )
 
-        full_prompt = f"{system_prompt}\n\nИмя собеседника: {user_name}\nВопрос: {prompt}"
+        full_prompt = f"{system_prompt}\n\nИмя собеседника: {user_name}\nЗапрос: {prompt}"
 
         # 4. API
         encoded_prompt = requests.utils.quote(full_prompt)
@@ -18557,28 +18568,30 @@ def cmd_ai(message):
             bot.reply_to(message, "🤖 Ай-яй, чет я завис. Давай по новой.", parse_mode="HTML")
             return
 
-        # 5. КРАСИМ ОТВЕТ (ДОБАВЛЯЕМ ШРИФТЫ И ЭМОДЗИ)
-        # Удаляем "думает..."
+        # 5. КРАСИМ ОТВЕТ
         bot.delete_message(message.chat.id, thinking_msg.message_id)
 
-        # Делаем первую букву большой и чистим
-        ai_response = ai_response.strip().capitalize()
+        # Чистим и форматируем
+        ai_response = ai_response.strip()
+        
+        # Добавляем эмодзи в начало если их нет
+        if not any(emoji in ai_response for emoji in ['😼','🔥','💸','🤡','🫵','⚡️','🦦','🧃','💅','👾','🎰','💊','🧨']):
+            emoji_list = ['😼', '🔥', '💸', '⚡️', '🦦', '👾', '🎰', '🧨']
+            ai_response = f"{random.choice(emoji_list)} {ai_response}"
 
-        # Иногда добавляем случайный шрифт (bold/italic) для прикола
-        if random.random() < 0.3:  # 30% шанс
+        # Иногда добавляем случайный шрифт
+        style_rand = random.random()
+        if style_rand < 0.3:
             ai_response = f"<b>{ai_response}</b>"
-        elif random.random() < 0.2:
+        elif style_rand < 0.5:
             ai_response = f"<i>{ai_response}</i>"
+        elif style_rand < 0.6:
+            ai_response = f"<code>{ai_response}</code>"
 
-        # 6. ОТПРАВЛЯЕМ
-        sent_msg = bot.send_message(
-            message.chat.id,
-            ai_response,
-            parse_mode="HTML",
-            reply_to_message_id=message.message_id  # Всегда отвечаем на сообщение пользователя
-        )
+        # 6. ОТПРАВЛЯЕМ (всегда реплаем на сообщение пользователя)
+        sent_msg = bot.reply_to(message, ai_response, parse_mode="HTML")
 
-        # 7. СОХРАНЯЕМ КОНТЕКСТ (для ответов на ответы)
+        # 7. СОХРАНЯЕМ КОНТЕКСТ
         if not hasattr(bot, "ai_messages"):
             bot.ai_messages = {}
 
@@ -18586,8 +18599,15 @@ def cmd_ai(message):
             "chat_id": message.chat.id,
             "prompt": full_prompt,
             "user_id": user_id,
-            "original_msg_id": message.message_id
+            "original_msg_id": message.message_id,
+            "short_context": prompt[:150] + "..." if len(prompt) > 150 else prompt
         }
+
+        # Ограничиваем размер истории (максимум 50 сообщений)
+        if hasattr(bot, "ai_messages") and len(bot.ai_messages) > 50:
+            keys = list(bot.ai_messages.keys())
+            for old_key in keys[:-50]:
+                del bot.ai_messages[old_key]
 
     except requests.exceptions.Timeout:
         try:
