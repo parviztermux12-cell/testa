@@ -1693,1076 +1693,7 @@ def unban_user(message):
     
   
 
-# ================== 🎣 СИСТЕМА РЫБАЛКИ ==================
-FISHING_DB = "fishing.db"
 
-# Инициализация базы данных
-def init_fishing_db():
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    
-    # Прогресс игрока
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS fishing_progress (
-            user_id INTEGER PRIMARY KEY,
-            location TEXT DEFAULT 'река',
-            rod_level INTEGER DEFAULT 1,
-            line_level INTEGER DEFAULT 1,
-            rod_health INTEGER DEFAULT 100,
-            opened_locations TEXT DEFAULT 'река'
-        )
-    """)
-    
-    # Инвентарь (наживка)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS fishing_inventory (
-            user_id INTEGER PRIMARY KEY,
-            bait_regular INTEGER DEFAULT 10,
-            bait_good INTEGER DEFAULT 0,
-            bait_premium INTEGER DEFAULT 0,
-            bait_legendary INTEGER DEFAULT 0
-        )
-    """)
-    
-    # Коллекция рыбы
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS fishing_collection (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            fish_name TEXT NOT NULL,
-            fish_value INTEGER NOT NULL,
-            fish_location TEXT NOT NULL,
-            caught_at TEXT NOT NULL
-        )
-    """)
-    
-    # Статистика
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS fishing_stats (
-            user_id INTEGER PRIMARY KEY,
-            biggest_fish TEXT DEFAULT 'нет',
-            biggest_fish_value INTEGER DEFAULT 0,
-            total_earned INTEGER DEFAULT 0,
-            total_catches INTEGER DEFAULT 0,
-            total_repairs INTEGER DEFAULT 0
-        )
-    """)
-    
-    conn.commit()
-    conn.close()
-
-init_fishing_db()
-
-# ================== 🎣 КОНСТАНТЫ ==================
-
-# Наживка
-BAIT_TYPES = {
-    "regular": {"name": "🪱 Обычная", "price": 100, "bonus": 0, "emoji": "🪱"},
-    "good": {"name": "🦐 Хорошая", "price": 500, "bonus": 15, "emoji": "🦐"},
-    "premium": {"name": "🐟 Премиум", "price": 2000, "bonus": 30, "emoji": "🐟"},
-    "legendary": {"name": "✨ Легендарная", "price": 10000, "bonus": 50, "emoji": "✨"}
-}
-
-# Удочки
-ROD_LEVELS = {
-    1: {"name": "🪵 Деревянная", "price": 0, "bonus": 0, "next_price": 5000},
-    2: {"name": "🎋 Бамбуковая", "price": 5000, "bonus": 5, "next_price": 25000},
-    3: {"name": "🎣 Стеклопластик", "price": 25000, "bonus": 10, "next_price": 100000},
-    4: {"name": "⚡ Карбоновая", "price": 100000, "bonus": 15, "next_price": 500000},
-    5: {"name": "🔥 Профессиональная", "price": 500000, "bonus": 20, "next_price": 2000000},
-    6: {"name": "👑 Легендарная", "price": 2000000, "bonus": 30, "next_price": 0}
-}
-
-# Лески
-LINE_LEVELS = {
-    1: {"name": "🧵 Обычная", "price": 0, "durability": 50, "next_price": 2000},
-    2: {"name": "💪 Усиленная", "price": 2000, "durability": 65, "next_price": 15000},
-    3: {"name": "🦈 Противоакулья", "price": 15000, "durability": 80, "next_price": 80000},
-    4: {"name": "🔗 Кевларовая", "price": 80000, "durability": 92, "next_price": 400000},
-    5: {"name": "✨ Мифриловая", "price": 400000, "durability": 99, "next_price": 0}
-}
-
-# Локации
-LOCATIONS = {
-    "река": {
-        "name": "🏞️ Река",
-        "price": 0,
-        "next_price": 50000,
-        "next": "озеро",
-        "fish": [
-            {"name": "Плотва", "value": 50, "chance": 40},
-            {"name": "Окунь", "value": 120, "chance": 30},
-            {"name": "Щука", "value": 300, "chance": 20},
-            {"name": "Сом", "value": 800, "chance": 9},
-            {"name": "Золотая рыбка", "value": 5000, "chance": 1}
-        ]
-    },
-    "озеро": {
-        "name": "🏝️ Озеро",
-        "price": 50000,
-        "next_price": 200000,
-        "next": "море",
-        "fish": [
-            {"name": "Карп", "value": 200, "chance": 35},
-            {"name": "Лещ", "value": 500, "chance": 30},
-            {"name": "Судак", "value": 1200, "chance": 20},
-            {"name": "Угорь", "value": 3000, "chance": 12},
-            {"name": "Стерлядь", "value": 10000, "chance": 3}
-        ]
-    },
-    "море": {
-        "name": "🌊 Море",
-        "price": 200000,
-        "next_price": 1000000,
-        "next": "океан",
-        "fish": [
-            {"name": "Ставрида", "value": 1000, "chance": 35},
-            {"name": "Скумбрия", "value": 2500, "chance": 30},
-            {"name": "Тунец", "value": 6000, "chance": 20},
-            {"name": "Палтус", "value": 15000, "chance": 12},
-            {"name": "Осётр", "value": 40000, "chance": 3}
-        ]
-    },
-    "океан": {
-        "name": "🌌 Океан",
-        "price": 1000000,
-        "next_price": 5000000,
-        "next": "бездна",
-        "fish": [
-            {"name": "Марлин", "value": 10000, "chance": 35},
-            {"name": "Меч-рыба", "value": 25000, "chance": 30},
-            {"name": "Акула", "value": 60000, "chance": 20},
-            {"name": "Кит", "value": 150000, "chance": 12},
-            {"name": "Гигантский кальмар", "value": 400000, "chance": 3}
-        ]
-    },
-    "бездна": {
-        "name": "🕳️ Бездна",
-        "price": 5000000,
-        "next_price": 0,
-        "next": None,
-        "fish": [
-            {"name": "Глубоководный удильщик", "value": 50000, "chance": 40},
-            {"name": "Рыба-гадюка", "value": 120000, "chance": 30},
-            {"name": "Гигантский изопод", "value": 300000, "chance": 18},
-            {"name": "Морской дьявол", "value": 800000, "chance": 8},
-            {"name": "Левиафан", "value": 2000000, "chance": 3},
-            {"name": "Морской змей", "value": 5000000, "chance": 1}
-        ]
-    }
-}
-
-# ================== 🎣 ФУНКЦИИ РАБОТЫ С БД ==================
-
-def get_fishing_progress(user_id):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    c.execute("SELECT location, rod_level, line_level, rod_health, opened_locations FROM fishing_progress WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    
-    if not result:
-        c.execute("INSERT INTO fishing_progress (user_id, opened_locations) VALUES (?, ?)", (user_id, "река"))
-        conn.commit()
-        result = ("река", 1, 1, 100, "река")
-    
-    conn.close()
-    return {
-        "location": result[0],
-        "rod_level": result[1],
-        "line_level": result[2],
-        "rod_health": result[3],
-        "opened_locations": result[4].split(",")
-    }
-
-def update_fishing_progress(user_id, **kwargs):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    
-    fields = []
-    values = []
-    for key, value in kwargs.items():
-        if key == "opened_locations" and isinstance(value, list):
-            value = ",".join(value)
-        fields.append(f"{key} = ?")
-        values.append(value)
-    
-    values.append(user_id)
-    c.execute(f"UPDATE fishing_progress SET {', '.join(fields)} WHERE user_id = ?", tuple(values))
-    conn.commit()
-    conn.close()
-
-def get_fishing_inventory(user_id):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    c.execute("SELECT bait_regular, bait_good, bait_premium, bait_legendary FROM fishing_inventory WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    
-    if not result:
-        c.execute("INSERT INTO fishing_inventory (user_id) VALUES (?)", (user_id,))
-        conn.commit()
-        result = (10, 0, 0, 0)
-    
-    conn.close()
-    return {
-        "regular": result[0],
-        "good": result[1],
-        "premium": result[2],
-        "legendary": result[3]
-    }
-
-def update_fishing_inventory(user_id, bait_type, change):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    
-    field = f"bait_{bait_type}"
-    c.execute(f"UPDATE fishing_inventory SET {field} = {field} + ? WHERE user_id = ?", (change, user_id))
-    conn.commit()
-    conn.close()
-
-def add_fish_to_collection(user_id, fish_name, fish_value, location):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    c.execute("INSERT INTO fishing_collection (user_id, fish_name, fish_value, fish_location, caught_at) VALUES (?, ?, ?, ?, ?)",
-              (user_id, fish_name, fish_value, location, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-def get_fishing_stats(user_id):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    c.execute("SELECT biggest_fish, biggest_fish_value, total_earned, total_catches, total_repairs FROM fishing_stats WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    
-    if not result:
-        c.execute("INSERT INTO fishing_stats (user_id) VALUES (?)", (user_id,))
-        conn.commit()
-        result = ("нет", 0, 0, 0, 0)
-    
-    conn.close()
-    return {
-        "biggest_fish": result[0],
-        "biggest_fish_value": result[1],
-        "total_earned": result[2],
-        "total_catches": result[3],
-        "total_repairs": result[4]
-    }
-
-def update_fishing_stats(user_id, **kwargs):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    
-    fields = []
-    values = []
-    for key, value in kwargs.items():
-        fields.append(f"{key} = {key} + ?")
-        values.append(value)
-    
-    values.append(user_id)
-    c.execute(f"UPDATE fishing_stats SET {', '.join(fields)} WHERE user_id = ?", tuple(values))
-    conn.commit()
-    conn.close()
-
-def set_biggest_fish(user_id, fish_name, fish_value):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    c.execute("UPDATE fishing_stats SET biggest_fish = ?, biggest_fish_value = ? WHERE user_id = ?", (fish_name, fish_value, user_id))
-    conn.commit()
-    conn.close()
-
-def get_fishing_collection(user_id, location=None):
-    conn = sqlite3.connect(FISHING_DB)
-    c = conn.cursor()
-    
-    if location:
-        c.execute("SELECT fish_name, COUNT(*) as count, SUM(fish_value) as total FROM fishing_collection WHERE user_id = ? AND fish_location = ? GROUP BY fish_name", (user_id, location))
-    else:
-        c.execute("SELECT fish_name, COUNT(*) as count, SUM(fish_value) as total FROM fishing_collection WHERE user_id = ? GROUP BY fish_name", (user_id,))
-    
-    result = c.fetchall()
-    conn.close()
-    return result
-    
-    # ================== 🎣 ОСНОВНЫЕ КОМАНДЫ ==================
-
-# Проверка владельца кнопки
-def check_fishing_owner(call, user_id):
-    if call.from_user.id != user_id:
-        bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
-        return False
-    return True
-
-# 🎣 КОМАНДА: рыбачить
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "рыбачить")
-def cmd_fishing(message):
-    user_id = message.from_user.id
-    mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-    
-    progress = get_fishing_progress(user_id)
-    inventory = get_fishing_inventory(user_id)
-    
-    # Проверяем наличие наживки
-    total_bait = sum(inventory.values())
-    if total_bait == 0:
-        bot.send_message(message.chat.id, 
-                        f"{mention}, у тебя нет наживки! Купи в магазине: <code>магазин рыбалки</code>",
-                        parse_mode="HTML")
-        return
-    
-    # Выбираем случайную наживку из имеющихся
-    bait_choices = []
-    for bait_type, count in inventory.items():
-        if count > 0:
-            bait_choices.extend([bait_type] * count)
-    
-    selected_bait = random.choice(bait_choices)
-    
-    # Отправляем сообщение о начале
-    msg = bot.send_message(message.chat.id, "🎣 Закидываю удочку... 🎣")
-    
-    # Задержка 2-5 секунд
-    time.sleep(random.uniform(2, 5))
-    
-    # Получаем актуальные данные (могли измениться)
-    progress = get_fishing_progress(user_id)
-    location_data = LOCATIONS[progress["location"]]
-    
-    # Рассчитываем шансы
-    rod_bonus = ROD_LEVELS[progress["rod_level"]]["bonus"]
-    bait_bonus = BAIT_TYPES[selected_bait]["bonus"]
-    total_bonus = rod_bonus + bait_bonus
-    
-    # Определяем результат
-    rand = random.randint(1, 100)
-    
-    # Списываем наживку
-    update_fishing_inventory(user_id, selected_bait, -1)
-    
-    # Мусор (15%)
-    if rand <= 15:
-        text = f"🗑️ {mention}, ты поймал старый ботинок... Наживка потрачена впустую."
-        update_fishing_stats(user_id, total_lost=BAIT_TYPES[selected_bait]["price"])
-    
-    # Акула/монстр (10%)
-    elif rand <= 25:
-        # Проверка прочности лески
-        durability = LINE_LEVELS[progress["line_level"]]["durability"]
-        if random.randint(1, 100) > durability:
-            # Леска порвалась
-            text = (f"🦈 {mention}, на тебя напала акула! "
-                   f"Леска порвалась, рыба уплыла. Надо купить новую леску в магазине.")
-        else:
-            # Повреждение удочки
-            new_health = progress["rod_health"] - random.randint(10, 30)
-            if new_health <= 0:
-                new_health = 10
-                text = (f"🦈 {mention}, акула чуть не сломала удочку! "
-                       f"Прочность удочки: {new_health}%. Срочно нужен ремонт!")
-            else:
-                text = (f"🦈 {mention}, акула атаковала! Ты отбился, но удочка повреждена. "
-                       f"Прочность: {new_health}%")
-            
-            update_fishing_progress(user_id, rod_health=new_health)
-        
-        update_fishing_stats(user_id, total_lost=BAIT_TYPES[selected_bait]["price"] * 2)
-    
-    # Шторм/катастрофа (5%)
-    elif rand <= 30:
-        new_health = progress["rod_health"] - 50
-        if new_health <= 0:
-            new_health = 20
-            text = (f"🌪️ {mention}, шторм уничтожил почти всё снаряжение! "
-                   f"Удочка чудом уцелела, прочность {new_health}%. Немедленно в ремонт!")
-        else:
-            text = (f"🌪️ {mention}, начался шторм! Ты потерял половину прочности удочки. "
-                   f"Текущая прочность: {new_health}%")
-        
-        update_fishing_progress(user_id, rod_health=new_health)
-        update_fishing_stats(user_id, total_lost=BAIT_TYPES[selected_bait]["price"] * 3)
-    
-    # Рыба (70%)
-    else:
-        # Выбираем рыбу по шансам с учётом бонуса
-        fish_list = location_data["fish"]
-        total_chance = sum(f["chance"] for f in fish_list)
-        
-        # Добавляем бонус к шансам редкой рыбы
-        adjusted_fish = []
-        for fish in fish_list:
-            chance = fish["chance"]
-            if fish["value"] > 1000:  # редкая рыба
-                chance = min(chance + total_bonus, chance * 2)
-            adjusted_fish.extend([fish] * int(chance * 10))
-        
-        selected_fish = random.choice(adjusted_fish)
-        
-        # Начисляем деньги
-        user_data = get_user_data(user_id)
-        user_data["balance"] += selected_fish["value"]
-        save_casino_data()
-        
-        # Сохраняем в коллекцию
-        add_fish_to_collection(user_id, selected_fish["name"], selected_fish["value"], progress["location"])
-        
-        # Обновляем статистику
-        update_fishing_stats(user_id, total_earned=selected_fish["value"], total_catches=1)
-        
-        # Проверяем, не рекордная ли это рыба
-        stats = get_fishing_stats(user_id)
-        if selected_fish["value"] > stats["biggest_fish_value"]:
-            set_biggest_fish(user_id, selected_fish["name"], selected_fish["value"])
-            record_text = " 🏆 НОВЫЙ РЕКОРД!"
-        else:
-            record_text = ""
-        
-        text = (f"✅ {mention}, ты поймал {selected_fish['name']} "
-                f"стоимостью {format_number(selected_fish['value'])}$!{record_text}")
-    
-    # Обновляем сообщение
-    bot.edit_message_text(text, message.chat.id, msg.message_id, parse_mode="HTML")
-
-# 🎣 КОМАНДА: магазин рыбалки
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "магазин рыбалки")
-def cmd_fishing_shop(message):
-    user_id = message.from_user.id
-    mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-    
-    progress = get_fishing_progress(user_id)
-    
-    text = f"🎣 <b>МАГАЗИН РЫБАЛКИ</b> {mention}\n\n"
-    text += "━━━━━━━━━━━━━━━━━━━\n"
-    text += "<b>🪤 НАЖИВКА (10 шт):</b>\n"
-    
-    for bait_id, bait in BAIT_TYPES.items():
-        text += f"{bait['emoji']} {bait['name']} — {format_number(bait['price'] * 10)}$\n"
-    
-    text += "\n━━━━━━━━━━━━━━━━━━━\n"
-    text += f"<b>🎣 УДОЧКА:</b> {ROD_LEVELS[progress['rod_level']]['name']}\n"
-    
-    if progress['rod_level'] < 6:
-        next_rod = ROD_LEVELS[progress['rod_level'] + 1]
-        text += f"⬆️ Улучшить: {next_rod['name']} — {format_number(next_rod['price'])}$\n"
-    
-    text += "\n━━━━━━━━━━━━━━━━━━━\n"
-    text += f"<b>🧵 ЛЕСКА:</b> {LINE_LEVELS[progress['line_level']]['name']}\n"
-    
-    if progress['line_level'] < 5:
-        next_line = LINE_LEVELS[progress['line_level'] + 1]
-        text += f"⬆️ Улучшить: {next_line['name']} — {format_number(next_line['price'])}$\n"
-    
-    if progress['rod_health'] < 100:
-        repair_cost = ROD_LEVELS[progress['rod_level']]['price'] // 2
-        text += f"\n━━━━━━━━━━━━━━━━━━━\n"
-        text += f"<b>🔧 РЕМОНТ УДОЧКИ:</b> {format_number(repair_cost)}$ (прочность {progress['rod_health']}%)"
-    
-    # Создаём клавиатуру
-    kb = InlineKeyboardMarkup(row_width=2)
-    
-    # Кнопки покупки наживки
-    kb.add(
-        InlineKeyboardButton("🪱 Обычная", callback_data=f"fishing_buy_regular_{user_id}"),
-        InlineKeyboardButton("🦐 Хорошая", callback_data=f"fishing_buy_good_{user_id}")
-    )
-    kb.add(
-        InlineKeyboardButton("🐟 Премиум", callback_data=f"fishing_buy_premium_{user_id}"),
-        InlineKeyboardButton("✨ Легендарная", callback_data=f"fishing_buy_legendary_{user_id}")
-    )
-    
-    # Кнопки улучшений
-    upgrade_buttons = []
-    if progress['rod_level'] < 6:
-        upgrade_buttons.append(InlineKeyboardButton("🎣 Улучшить удочку", callback_data=f"fishing_upgrade_rod_{user_id}"))
-    if progress['line_level'] < 5:
-        upgrade_buttons.append(InlineKeyboardButton("🧵 Улучшить леску", callback_data=f"fishing_upgrade_line_{user_id}"))
-    
-    if upgrade_buttons:
-        kb.add(*upgrade_buttons)
-    
-    # Кнопка ремонта
-    if progress['rod_health'] < 100:
-        kb.add(InlineKeyboardButton("🔧 Отремонтировать", callback_data=f"fishing_repair_{user_id}"))
-    
-    bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=kb)
-
-# 🎣 КОМАНДА: мои локации
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "мои локации")
-def cmd_fishing_locations(message):
-    user_id = message.from_user.id
-    mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-    
-    progress = get_fishing_progress(user_id)
-    current = progress["location"]
-    opened = progress["opened_locations"]
-    
-    text = f"🗺️ <b>ЛОКАЦИИ ДЛЯ РЫБАЛКИ</b> {mention}\n\n"
-    text += "━━━━━━━━━━━━━━━━━━━\n\n"
-    
-    for loc_id, loc_data in LOCATIONS.items():
-        if loc_id in opened:
-            status = "✅" if loc_id == current else "✔️"
-            text += f"{status} {loc_data['name']} — открыто\n"
-        else:
-            prev_loc = list(LOCATIONS.keys())[list(LOCATIONS.keys()).index(loc_id) - 1]
-            if prev_loc in opened:
-                text += f"🔒 {loc_data['name']} — {format_number(loc_data['price'])}$\n"
-            else:
-                text += f"🔒 {loc_data['name']} — недоступно\n"
-    
-    text += f"\n━━━━━━━━━━━━━━━━━━━\n"
-    text += f"📍 Текущая локация: {LOCATIONS[current]['name']}"
-    
-    # Клавиатура для смены локации
-    kb = InlineKeyboardMarkup()
-    for loc_id in opened:
-        if loc_id != current:
-            kb.add(InlineKeyboardButton(f"➡️ {LOCATIONS[loc_id]['name']}", 
-                                      callback_data=f"fishing_change_loc_{user_id}_{loc_id}"))
-    
-    # Кнопка покупки новой локации
-    for loc_id, loc_data in LOCATIONS.items():
-        if loc_id not in opened and loc_data['price'] > 0:
-            prev_loc = list(LOCATIONS.keys())[list(LOCATIONS.keys()).index(loc_id) - 1]
-            if prev_loc in opened:
-                kb.add(InlineKeyboardButton(f"🔓 Купить {loc_data['name']} за {format_number(loc_data['price'])}$",
-                                          callback_data=f"fishing_buy_loc_{user_id}_{loc_id}"))
-                break
-    
-    bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=kb)
-
-# 🎣 КОМАНДА: моя рыбалка (ГЛАВНОЕ МЕНЮ)
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "моя рыбалка")
-def cmd_fishing_main(message):
-    user_id = message.from_user.id
-    show_fishing_menu(message.chat.id, user_id, message.from_user.first_name)
-
-def show_fishing_menu(chat_id, user_id, first_name):
-    mention = f'<a href="tg://user?id={user_id}">{first_name}</a>'
-    
-    # Собираем все данные
-    progress = get_fishing_progress(user_id)
-    inventory = get_fishing_inventory(user_id)
-    stats = get_fishing_stats(user_id)
-    collection = get_fishing_collection(user_id)
-    
-    # Подсчёт общей стоимости коллекции
-    total_collection_value = sum(item[2] for item in collection)
-    unique_fish = len(collection)
-    
-    # Текст меню
-    text = (
-        f"🎣 <b>МОЯ РЫБАЛКА</b> {mention}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>📍 ТЕКУЩАЯ ЛОКАЦИЯ:</b>\n"
-        f"{LOCATIONS[progress['location']]['name']}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>🎣 СНАРЯЖЕНИЕ:</b>\n"
-        f"• Удочка: {ROD_LEVELS[progress['rod_level']]['name']}\n"
-        f"• Леска: {LINE_LEVELS[progress['line_level']]['name']}\n"
-        f"• Прочность удочки: {progress['rod_health']}%\n\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>🪤 НАЖИВКА:</b>\n"
-        f"• 🪱 Обычная: {inventory['regular']} шт\n"
-        f"• 🦐 Хорошая: {inventory['good']} шт\n"
-        f"• 🐟 Премиум: {inventory['premium']} шт\n"
-        f"• ✨ Легендарная: {inventory['legendary']} шт\n\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>📊 СТАТИСТИКА:</b>\n"
-        f"• Всего поймано: {stats['total_catches']} рыб\n"
-        f"• Заработано: {format_number(stats['total_earned'])}$\n"
-        f"• Рекорд: {stats['biggest_fish']} ({format_number(stats['biggest_fish_value'])}$)\n"
-        f"• В коллекции: {unique_fish} видов рыб\n"
-        f"• Стоимость коллекции: {format_number(total_collection_value)}$\n"
-        f"• Ремонтов: {stats['total_repairs']}"
-    )
-    
-    # Клавиатура
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("📦 Инвентарь", callback_data=f"fishing_inventory_{user_id}"),
-        InlineKeyboardButton("📚 Коллекция", callback_data=f"fishing_collection_{user_id}")
-    )
-    kb.add(
-        InlineKeyboardButton("💰 Продать рыбу", callback_data=f"fishing_sell_{user_id}"),
-        InlineKeyboardButton("🗺️ Локации", callback_data=f"fishing_show_locations_{user_id}")
-    )
-    kb.add(
-        InlineKeyboardButton("🎣 Магазин", callback_data=f"fishing_shop_{user_id}"),
-        InlineKeyboardButton("🔄 Обновить", callback_data=f"fishing_refresh_{user_id}")
-    )
-    
-    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=kb)
-
-# ================== 🎣 ОБРАБОТЧИКИ КНОПОК ==================
-
-# ПОКУПКА НАЖИВКИ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_buy_"))
-def fishing_buy_callback(call):
-    try:
-        parts = call.data.split("_")
-        bait_type = parts[2]
-        user_id = int(parts[3])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        if bait_type not in ["regular", "good", "premium", "legendary"]:
-            bot.answer_callback_query(call.id, "❌ Неверный тип наживки!")
-            return
-        
-        price = BAIT_TYPES[bait_type]["price"] * 10
-        user_data = get_user_data(user_id)
-        
-        if user_data["balance"] < price:
-            bot.answer_callback_query(call.id, f"❌ Недостаточно средств! Нужно {format_number(price)}$", show_alert=True)
-            return
-        
-        # Покупка
-        user_data["balance"] -= price
-        update_fishing_inventory(user_id, bait_type, 10)
-        save_casino_data()
-        
-        bot.answer_callback_query(call.id, f"✅ Куплено 10 {BAIT_TYPES[bait_type]['name']} за {format_number(price)}$")
-        
-        # Обновляем меню, если оно открыто
-        try:
-            show_fishing_menu(call.message.chat.id, user_id, call.from_user.first_name)
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка покупки наживки: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# УЛУЧШЕНИЕ УДОЧКИ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_upgrade_rod_"))
-def fishing_upgrade_rod_callback(call):
-    try:
-        user_id = int(call.data.split("_")[3])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        progress = get_fishing_progress(user_id)
-        
-        if progress["rod_level"] >= 6:
-            bot.answer_callback_query(call.id, "❌ У тебя уже максимальная удочка!", show_alert=True)
-            return
-        
-        next_level = progress["rod_level"] + 1
-        price = ROD_LEVELS[next_level]["price"]
-        user_data = get_user_data(user_id)
-        
-        if user_data["balance"] < price:
-            bot.answer_callback_query(call.id, f"❌ Недостаточно средств! Нужно {format_number(price)}$", show_alert=True)
-            return
-        
-        # Улучшение
-        user_data["balance"] -= price
-        update_fishing_progress(user_id, rod_level=next_level, rod_health=100)
-        save_casino_data()
-        
-        bot.answer_callback_query(call.id, f"✅ Удочка улучшена до {ROD_LEVELS[next_level]['name']}!")
-        
-        # Обновляем меню
-        try:
-            show_fishing_menu(call.message.chat.id, user_id, call.from_user.first_name)
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка улучшения удочки: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# УЛУЧШЕНИЕ ЛЕСКИ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_upgrade_line_"))
-def fishing_upgrade_line_callback(call):
-    try:
-        user_id = int(call.data.split("_")[3])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        progress = get_fishing_progress(user_id)
-        
-        if progress["line_level"] >= 5:
-            bot.answer_callback_query(call.id, "❌ У тебя уже максимальная леска!", show_alert=True)
-            return
-        
-        next_level = progress["line_level"] + 1
-        price = LINE_LEVELS[next_level]["price"]
-        user_data = get_user_data(user_id)
-        
-        if user_data["balance"] < price:
-            bot.answer_callback_query(call.id, f"❌ Недостаточно средств! Нужно {format_number(price)}$", show_alert=True)
-            return
-        
-        # Улучшение
-        user_data["balance"] -= price
-        update_fishing_progress(user_id, line_level=next_level)
-        save_casino_data()
-        
-        bot.answer_callback_query(call.id, f"✅ Леска улучшена до {LINE_LEVELS[next_level]['name']}!")
-        
-        # Обновляем меню
-        try:
-            show_fishing_menu(call.message.chat.id, user_id, call.from_user.first_name)
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка улучшения лески: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# РЕМОНТ УДОЧКИ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_repair_"))
-def fishing_repair_callback(call):
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        progress = get_fishing_progress(user_id)
-        
-        if progress["rod_health"] >= 100:
-            bot.answer_callback_query(call.id, "❌ Удочка в идеальном состоянии!", show_alert=True)
-            return
-        
-        repair_cost = ROD_LEVELS[progress["rod_level"]]["price"] // 2
-        user_data = get_user_data(user_id)
-        
-        if user_data["balance"] < repair_cost:
-            bot.answer_callback_query(call.id, f"❌ Недостаточно средств! Нужно {format_number(repair_cost)}$", show_alert=True)
-            return
-        
-        # Ремонт
-        user_data["balance"] -= repair_cost
-        update_fishing_progress(user_id, rod_health=100)
-        update_fishing_stats(user_id, total_repairs=1)
-        save_casino_data()
-        
-        bot.answer_callback_query(call.id, f"✅ Удочка отремонтирована за {format_number(repair_cost)}$")
-        
-        # Обновляем меню
-        try:
-            show_fishing_menu(call.message.chat.id, user_id, call.from_user.first_name)
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка ремонта удочки: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# СМЕНА ЛОКАЦИИ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_change_loc_"))
-def fishing_change_location_callback(call):
-    try:
-        parts = call.data.split("_")
-        user_id = int(parts[3])
-        new_location = parts[4]
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        progress = get_fishing_progress(user_id)
-        
-        if new_location not in progress["opened_locations"]:
-            bot.answer_callback_query(call.id, "❌ Локация не открыта!", show_alert=True)
-            return
-        
-        if progress["location"] == new_location:
-            bot.answer_callback_query(call.id, "❌ Ты уже здесь!", show_alert=True)
-            return
-        
-        update_fishing_progress(user_id, location=new_location)
-        bot.answer_callback_query(call.id, f"✅ Переместился в {LOCATIONS[new_location]['name']}")
-        
-        # Обновляем меню локаций
-        try:
-            cmd_fishing_locations(call.message)
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка смены локации: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ПОКУПКА НОВОЙ ЛОКАЦИИ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_buy_loc_"))
-def fishing_buy_location_callback(call):
-    try:
-        parts = call.data.split("_")
-        user_id = int(parts[3])
-        new_location = parts[4]
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        progress = get_fishing_progress(user_id)
-        
-        if new_location in progress["opened_locations"]:
-            bot.answer_callback_query(call.id, "❌ Локация уже открыта!", show_alert=True)
-            return
-        
-        price = LOCATIONS[new_location]["price"]
-        user_data = get_user_data(user_id)
-        
-        if user_data["balance"] < price:
-            bot.answer_callback_query(call.id, f"❌ Недостаточно средств! Нужно {format_number(price)}$", show_alert=True)
-            return
-        
-        # Покупка
-        user_data["balance"] -= price
-        opened = progress["opened_locations"] + [new_location]
-        update_fishing_progress(user_id, opened_locations=opened)
-        save_casino_data()
-        
-        bot.answer_callback_query(call.id, f"✅ Открыта новая локация: {LOCATIONS[new_location]['name']}!")
-        
-        # Обновляем меню локаций
-        try:
-            cmd_fishing_locations(call.message)
-        except:
-            pass
-        
-    except Exception as e:
-        logger.error(f"Ошибка покупки локации: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ПОКАЗАТЬ ЛОКАЦИИ ИЗ ГЛАВНОГО МЕНЮ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_show_locations_"))
-def fishing_show_locations_callback(call):
-    try:
-        user_id = int(call.data.split("_")[3])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        # Создаём фейковое сообщение
-        class FakeMessage:
-            def __init__(self, chat, from_user):
-                self.chat = chat
-                self.from_user = from_user
-                self.chat_id = chat.id
-        
-        fake_msg = FakeMessage(call.message.chat, call.from_user)
-        cmd_fishing_locations(fake_msg)
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка показа локаций: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ПОКАЗАТЬ ИНВЕНТАРЬ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_inventory_"))
-def fishing_inventory_callback(call):
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        inventory = get_fishing_inventory(user_id)
-        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
-        
-        text = (
-            f"📦 <b>ИНВЕНТАРЬ РЫБАЛКИ</b> {mention}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>🪤 НАЖИВКА:</b>\n"
-            f"• 🪱 Обычная: {inventory['regular']} шт\n"
-            f"• 🦐 Хорошая: {inventory['good']} шт\n"
-            f"• 🐟 Премиум: {inventory['premium']} шт\n"
-            f"• ✨ Легендарная: {inventory['legendary']} шт"
-        )
-        
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"fishing_back_{user_id}"))
-        
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                             parse_mode="HTML", reply_markup=kb)
-        bot.answer_callback_query(call.id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка показа инвентаря: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ПОКАЗАТЬ КОЛЛЕКЦИЮ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_collection_"))
-def fishing_collection_callback(call):
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        progress = get_fishing_progress(user_id)
-        collection = get_fishing_collection(user_id, progress["location"])
-        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
-        
-        text = f"📚 <b>КОЛЛЕКЦИЯ РЫБЫ</b> {mention}\n\n"
-        text += f"📍 Локация: {LOCATIONS[progress['location']]['name']}\n"
-        text += "━━━━━━━━━━━━━━━━━━━\n\n"
-        
-        if not collection:
-            text += "😢 В этой локации ещё ничего не поймано"
-        else:
-            total_value = 0
-            for fish_name, count, value in collection:
-                text += f"• {fish_name}: {count} шт (на {format_number(value)}$)\n"
-                total_value += value
-            text += f"\n━━━━━━━━━━━━━━━━━━━\n"
-            text += f"💰 Общая стоимость: {format_number(total_value)}$"
-        
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"fishing_back_{user_id}"))
-        
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                             parse_mode="HTML", reply_markup=kb)
-        bot.answer_callback_query(call.id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка показа коллекции: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ПРОДАТЬ РЫБУ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_sell_"))
-def fishing_sell_callback(call):
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        collection = get_fishing_collection(user_id)
-        total_value = sum(item[2] for item in collection)
-        
-        if total_value == 0:
-            bot.answer_callback_query(call.id, "❌ Нет рыбы для продажи!", show_alert=True)
-            return
-        
-        # Подтверждение
-        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
-        text = (
-            f"💰 <b>ПРОДАЖА ВСЕЙ РЫБЫ</b> {mention}\n\n"
-            f"Ты собираешься продать всю пойманную рыбу за {format_number(total_value)}$.\n"
-            f"Вся рыба из коллекции будет удалена.\n\n"
-            f"<i>Подтверждаешь?</i>"
-        )
-        
-        kb = InlineKeyboardMarkup(row_width=2)
-        kb.add(
-            InlineKeyboardButton("✅ Да, продать", callback_data=f"fishing_sell_confirm_{user_id}"),
-            InlineKeyboardButton("❌ Нет, отмена", callback_data=f"fishing_back_{user_id}")
-        )
-        
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                             parse_mode="HTML", reply_markup=kb)
-        bot.answer_callback_query(call.id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка продажи рыбы: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ПОДТВЕРЖДЕНИЕ ПРОДАЖИ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_sell_confirm_"))
-def fishing_sell_confirm_callback(call):
-    try:
-        user_id = int(call.data.split("_")[3])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        collection = get_fishing_collection(user_id)
-        total_value = sum(item[2] for item in collection)
-        
-        if total_value == 0:
-            bot.answer_callback_query(call.id, "❌ Нет рыбы для продажи!", show_alert=True)
-            return
-        
-        # Удаляем коллекцию
-        conn = sqlite3.connect(FISHING_DB)
-        c = conn.cursor()
-        c.execute("DELETE FROM fishing_collection WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        
-        # Начисляем деньги
-        user_data = get_user_data(user_id)
-        user_data["balance"] += total_value
-        save_casino_data()
-        
-        bot.answer_callback_query(call.id, f"✅ Продано за {format_number(total_value)}$")
-        
-        # Возвращаемся в главное меню
-        show_fishing_menu(call.message.chat.id, user_id, call.from_user.first_name)
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка подтверждения продажи: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ПОКАЗАТЬ МАГАЗИН ИЗ ГЛАВНОГО МЕНЮ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_shop_"))
-def fishing_shop_from_menu_callback(call):
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        # Создаём фейковое сообщение
-        class FakeMessage:
-            def __init__(self, chat, from_user):
-                self.chat = chat
-                self.from_user = from_user
-                self.chat_id = chat.id
-        
-        fake_msg = FakeMessage(call.message.chat, call.from_user)
-        cmd_fishing_shop(fake_msg)
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка показа магазина: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# ОБНОВИТЬ ГЛАВНОЕ МЕНЮ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_refresh_"))
-def fishing_refresh_callback(call):
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        show_fishing_menu(call.message.chat.id, user_id, call.from_user.first_name)
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка обновления: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-# НАЗАД В ГЛАВНОЕ МЕНЮ
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_back_"))
-def fishing_back_callback(call):
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        if not check_fishing_owner(call, user_id):
-            return
-        
-        show_fishing_menu(call.message.chat.id, user_id, call.from_user.first_name)
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id)
-        
-    except Exception as e:
-        logger.error(f"Ошибка возврата: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
 
 
 # ================== БАНКОВСКАЯ СИСТЕМА MEOW BANK ==================
@@ -9501,6 +8432,564 @@ def get_user_name(user_id):
         return f"Игрок {user_id}"
 
 print("✅ Игры: футбол, баскетбол, тир и кубик загружены и готовы к работе! ⚽🏀🎯🎲")
+
+# ================== ИГРА "ПИРАМИДА" С ЭМОДЗИ ==================
+# 10 уровней, на каждом уровне свой эмодзи
+# В каждом уровне 4 кнопки с ОДИНАКОВЫМ эмодзи
+# Только 1 клетка проход, 3 - проигрыш
+
+# Эмодзи для каждого уровня (все 4 кнопки уровня имеют одинаковый эмодзи)
+PYRAMID_EMOJIS = [
+    "🪨",  # Уровень 1 - Камень
+    "🌿",  # Уровень 2 - Трава
+    "🔥",  # Уровень 3 - Огонь
+    "💧",  # Уровень 4 - Вода
+    "🌪️",  # Уровень 5 - Вихрь
+    "❄️",  # Уровень 6 - Лёд
+    "⚡",  # Уровень 7 - Молния
+    "💎",  # Уровень 8 - Алмаз
+    "👑",  # Уровень 9 - Корона
+    "🌟"   # Уровень 10 - Звезда
+]
+
+# Множители для каждого уровня
+PYRAMID_MULTIPLIERS = [1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0, 15.0]
+
+# Хранилище активных игр
+active_pyramid_games = {}
+
+def generate_pyramid_keyboard(user_id, game_id, level, show_all=False):
+    """Создает клавиатуру для текущего уровня пирамиды"""
+    kb = InlineKeyboardMarkup(row_width=2)
+    
+    # Получаем данные игры
+    game = active_pyramid_games.get(game_id, {})
+    if not game:
+        return kb
+    
+    # Эмодзи для текущего уровня
+    current_emoji = PYRAMID_EMOJIS[level]
+    
+    # Генерируем 4 клетки (A, B, C, D) с ОДИНАКОВЫМ эмодзи
+    buttons = []
+    for i, cell in enumerate(["A", "B", "C", "D"]):
+        if show_all:
+            # Режим показа результатов (после окончания игры)
+            if cell == game["correct_cells"][level]:
+                text = f"✅ {current_emoji} (проход)"
+            else:
+                text = f"❌ {current_emoji}"
+        else:
+            # Обычный режим игры - все кнопки одинаковые
+            text = f"{current_emoji} Клетка {cell}"
+        
+        buttons.append(
+            InlineKeyboardButton(
+                text, 
+                callback_data=f"pyramid_cell_{game_id}_{cell}_{user_id}" if not show_all else "pyramid_finished"
+            )
+        )
+    
+    # Располагаем кнопки в 2 ряда по 2
+    kb.add(buttons[0], buttons[1])
+    kb.add(buttons[2], buttons[3])
+    
+    # Кнопка "Забрать выигрыш" (только во время игры)
+    if not show_all:
+        if level == 0:
+            current_win = game["bet"]
+            mult_text = "1x"
+        else:
+            current_mult = PYRAMID_MULTIPLIERS[level - 1]
+            current_win = int(game["bet"] * current_mult)
+            mult_text = f"{current_mult}x"
+        
+        kb.add(InlineKeyboardButton(
+            f"💰 Забрать {format_number(current_win)}$ ({mult_text})", 
+            callback_data=f"pyramid_cashout_{game_id}_{user_id}"
+        ))
+    
+    return kb
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("пирамида"))
+def pyramid_start(message):
+    try:
+        user_id = message.from_user.id
+        mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
+        
+        # Парсим ставку
+        parts = message.text.split()
+        if len(parts) < 2:
+            # Красивое описание игры
+            rules_text = (
+                f"🏛️ <b>ПИРАМИДА</b> | {mention}\n\n"
+                f"<b>📜 ПРАВИЛА:</b>\n"
+                f"• 10 уровней пирамиды\n"
+                f"• На каждом уровне свой символ: {PYRAMID_EMOJIS[0]} → {PYRAMID_EMOJIS[1]} → {PYRAMID_EMOJIS[2]} ...\n"
+                f"• 4 клетки, только 1 ведёт дальше\n"
+                f"• Остальные 3 - проигрыш\n\n"
+                f"<b>📈 МНОЖИТЕЛИ:</b>\n"
+            )
+            
+            # Добавляем множители красиво
+            for i in range(0, 10, 2):
+                if i+1 < 10:
+                    rules_text += f"• Ур.{i+1}: {PYRAMID_EMOJIS[i]} x{PYRAMID_MULTIPLIERS[i]}  |  Ур.{i+2}: {PYRAMID_EMOJIS[i+1]} x{PYRAMID_MULTIPLIERS[i+1]}\n"
+                else:
+                    rules_text += f"• Ур.{i+1}: {PYRAMID_EMOJIS[i]} x{PYRAMID_MULTIPLIERS[i]}\n"
+            
+            rules_text += f"\n💰 <b>Твой баланс:</b> {format_number(get_user_data(user_id)['balance'])}$\n"
+            rules_text += f"📝 <b>Пример:</b> <code>пирамида 1000</code>"
+            
+            bot.reply_to(message, rules_text, parse_mode="HTML")
+            return
+        
+        try:
+            bet = int(parts[1])
+            if bet < 100:
+                bot.reply_to(message, "❌ Минимальная ставка: 100$")
+                return
+        except ValueError:
+            bot.reply_to(message, "❌ Ставка должна быть числом!")
+            return
+        
+        user_data = get_user_data(user_id)
+        if user_data["balance"] < bet:
+            bot.reply_to(message, f"❌ Недостаточно средств! Твой баланс: {format_number(user_data['balance'])}$")
+            return
+        
+        # Списываем ставку
+        user_data["balance"] -= bet
+        save_casino_data()
+        
+        # Генерируем правильные клетки для всех 10 уровней
+        correct_cells = []
+        for _ in range(10):
+            correct_cells.append(random.choice(["A", "B", "C", "D"]))
+        
+        # Создаем игру
+        game_id = str(uuid.uuid4())[:8]
+        active_pyramid_games[game_id] = {
+            "user_id": user_id,
+            "bet": bet,
+            "level": 0,
+            "correct_cells": correct_cells,
+            "status": "playing",
+            "chat_id": message.chat.id,
+            "message_id": None,
+            "start_time": time.time()
+        }
+        
+        # Текст для 1 уровня
+        current_emoji = PYRAMID_EMOJIS[0]
+        
+        text = (
+            f"🏛️ <b>ПИРАМИДА - УРОВЕНЬ 1</b> | {mention}\n\n"
+            f"💰 Ставка: {format_number(bet)}$\n"
+            f"📊 Эмодзи уровня: {current_emoji}\n"
+            f"📈 Множитель: <b>x{PYRAMID_MULTIPLIERS[0]}</b>\n"
+            f"💎 Возможный выигрыш: <b>{format_number(int(bet * PYRAMID_MULTIPLIERS[0]))}$</b>\n\n"
+            f"<i>Все 4 клетки выглядят одинаково, но только 1 ведёт дальше!</i>"
+        )
+        
+        msg = bot.send_message(
+            message.chat.id,
+            text,
+            parse_mode="HTML",
+            reply_markup=generate_pyramid_keyboard(user_id, game_id, 0)
+        )
+        
+        active_pyramid_games[game_id]["message_id"] = msg.message_id
+        logger.info(f"Пирамида: {user_id} начал игру со ставкой {bet}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска пирамиды: {e}")
+        bot.reply_to(message, "❌ Ошибка при запуске игры!")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("pyramid_cell_"))
+def pyramid_cell_callback(call):
+    try:
+        parts = call.data.split("_")
+        game_id = parts[2]
+        cell = parts[3]
+        owner_id = int(parts[4])
+        
+        # ЗАЩИТА: проверяем владельца игры
+        if call.from_user.id != owner_id:
+            bot.answer_callback_query(call.id, "❌ Это не твоя пирамида!", show_alert=True)
+            return
+        
+        # Получаем игру
+        game = active_pyramid_games.get(game_id)
+        if not game or game["status"] != "playing":
+            bot.answer_callback_query(call.id, "❌ Игра уже завершена!", show_alert=True)
+            return
+        
+        user_id = game["user_id"]
+        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
+        level = game["level"]
+        
+        # Проверяем правильность клетки
+        correct_cell = game["correct_cells"][level]
+        
+        if cell == correct_cell:
+            # ✅ ПРОХОД НА СЛЕДУЮЩИЙ УРОВЕНЬ
+            game["level"] += 1
+            new_level = game["level"]
+            
+            # Проверяем, не прошли ли всю пирамиду
+            if new_level >= 10:
+                # 🎉 ПОБЕДА! Прошли все 10 уровней
+                win_mult = PYRAMID_MULTIPLIERS[-1]
+                win_amount = int(game["bet"] * win_mult)
+                final_emoji = PYRAMID_EMOJIS[-1]
+                
+                user_data = get_user_data(user_id)
+                user_data["balance"] += win_amount
+                game["status"] = "won"
+                save_casino_data()
+                
+                text = (
+                    f"🏛️ <b>ПИРАМИДА ПОКОРЕНА!</b> 🎉\n\n"
+                    f"{mention}, ты прошёл все 10 уровней!\n\n"
+                    f"💰 Ставка: {format_number(game['bet'])}$\n"
+                    f"📈 Итоговый множитель: <b>x{win_mult}</b>\n"
+                    f"💎 Выигрыш: <b>{format_number(win_amount)}$</b>\n"
+                    f"🏆 Финальный символ: {final_emoji}\n\n"
+                    f"🏆 Поздравляю с победой!"
+                )
+                
+                bot.edit_message_text(
+                    text,
+                    game["chat_id"],
+                    game["message_id"],
+                    parse_mode="HTML",
+                    reply_markup=generate_pyramid_keyboard(user_id, game_id, new_level-1, show_all=True)
+                )
+                
+                bot.answer_callback_query(call.id, f"🎉 Ты выиграл {format_number(win_amount)}$!")
+                
+                # Удаляем игру через 5 минут
+                threading.Timer(300, lambda: active_pyramid_games.pop(game_id, None)).start()
+                return
+            
+            # Переходим на следующий уровень
+            current_emoji = PYRAMID_EMOJIS[new_level]
+            current_mult = PYRAMID_MULTIPLIERS[new_level]
+            current_win = int(game["bet"] * current_mult)
+            
+            text = (
+                f"🏛️ <b>ПИРАМИДА - УРОВЕНЬ {new_level+1}</b> | {mention}\n\n"
+                f"✅ Уровень <b>{level+1}</b> пройден!\n\n"
+                f"💰 Ставка: {format_number(game['bet'])}$\n"
+                f"📊 Эмодзи уровня: {current_emoji}\n"
+                f"📈 Множитель: <b>x{current_mult}</b>\n"
+                f"💎 Возможный выигрыш: <b>{format_number(current_win)}$</b>\n\n"
+                f"<i>Выбери клетку для следующего уровня.</i>"
+            )
+            
+            bot.edit_message_text(
+                text,
+                game["chat_id"],
+                game["message_id"],
+                parse_mode="HTML",
+                reply_markup=generate_pyramid_keyboard(user_id, game_id, new_level)
+            )
+            
+            bot.answer_callback_query(call.id, f"✅ Уровень {level+1} пройден! (+{current_mult}x)")
+            
+        else:
+            # 💥 ПРОИГРЫШ
+            game["status"] = "lost"
+            current_emoji = PYRAMID_EMOJIS[level]
+            
+            text = (
+                f"🏛️ <b>ПИРАМИДА РУХНУЛА</b> 💥\n\n"
+                f"{mention}, ты выбрал не ту клетку на уровне <b>{level+1}</b>.\n\n"
+                f"💰 Ставка {format_number(game['bet'])}$ сгорела.\n"
+                f"❌ Эмодзи уровня: {current_emoji}\n\n"
+                f"Правильная клетка была: <b>{correct_cell}</b>"
+            )
+            
+            bot.edit_message_text(
+                text,
+                game["chat_id"],
+                game["message_id"],
+                parse_mode="HTML",
+                reply_markup=generate_pyramid_keyboard(user_id, game_id, level, show_all=True)
+            )
+            
+            bot.answer_callback_query(call.id, "💥 Ты проиграл!")
+            
+            # Удаляем игру через 5 минут
+            threading.Timer(300, lambda: active_pyramid_games.pop(game_id, None)).start()
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки клетки пирамиды: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("pyramid_cashout_"))
+def pyramid_cashout_callback(call):
+    try:
+        parts = call.data.split("_")
+        game_id = parts[2]
+        owner_id = int(parts[3])
+        
+        # ЗАЩИТА: проверяем владельца игры
+        if call.from_user.id != owner_id:
+            bot.answer_callback_query(call.id, "❌ Это не твоя пирамида!", show_alert=True)
+            return
+        
+        game = active_pyramid_games.get(game_id)
+        if not game or game["status"] != "playing":
+            bot.answer_callback_query(call.id, "❌ Игра уже завершена!", show_alert=True)
+            return
+        
+        user_id = game["user_id"]
+        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
+        level = game["level"]
+        
+        # Определяем выигрыш
+        if level == 0:
+            win_amount = game["bet"]
+            mult_text = "1x (возврат ставки)"
+            level_emoji = "🪨"
+        else:
+            current_mult = PYRAMID_MULTIPLIERS[level - 1]
+            win_amount = int(game["bet"] * current_mult)
+            mult_text = f"{current_mult}x"
+            level_emoji = PYRAMID_EMOJIS[level - 1]
+        
+        user_data = get_user_data(user_id)
+        user_data["balance"] += win_amount
+        game["status"] = "cashed_out"
+        save_casino_data()
+        
+        text = (
+            f"🏛️ <b>ПИРАМИДА - ВЫХОД</b> 💰\n\n"
+            f"{mention}, ты забрал выигрыш на уровне <b>{level}</b>.\n\n"
+            f"💰 Ставка: {format_number(game['bet'])}$\n"
+            f"📈 Множитель: {mult_text}\n"
+            f"💎 Выигрыш: <b>{format_number(win_amount)}$</b>\n"
+            f"🎴 Символ уровня: {level_emoji}\n\n"
+            f"Спасибо за игру!"
+        )
+        
+        bot.edit_message_text(
+            text,
+            game["chat_id"],
+            game["message_id"],
+            parse_mode="HTML",
+            reply_markup=generate_pyramid_keyboard(user_id, game_id, level, show_all=True)
+        )
+        
+        bot.answer_callback_query(call.id, f"💰 +{format_number(win_amount)}$")
+        
+        # Удаляем игру через 5 минут
+        threading.Timer(300, lambda: active_pyramid_games.pop(game_id, None)).start()
+        
+    except Exception as e:
+        logger.error(f"Ошибка вывода денег из пирамиды: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda c: c.data == "pyramid_finished")
+def pyramid_finished_callback(call):
+    """Заглушка для нажатий на завершенную игру"""
+    bot.answer_callback_query(call.id, "⏳ Игра уже завершена")
+
+print("✅ Игра 'Пирамида' с эмодзи загружена! 🏛️")
+print("   Эмодзи уровней: 🪨 → 🌿 → 🔥 → 💧 → 🌪️ → ❄️ → ⚡ → 💎 → 👑 → 🌟")
+# ================== 🐿️ ИГРА "НАЙДИ БЕЛКУ" ==================
+
+import random
+import uuid
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# Словарь для хранения активных игр
+active_squirrel_games = {}
+
+def check_squirrel_owner(call, user_id):
+    """Проверка владельца кнопки"""
+    if call.from_user.id != user_id:
+        bot.answer_callback_query(call.id, "❌ Это не твоя игра!", show_alert=True)
+        return False
+    return True
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("белка "))
+def squirrel_game(message):
+    """Команда для начала игры: белка [ставка]"""
+    try:
+        user_id = message.from_user.id
+        mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
+        
+        # Парсим ставку
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, 
+                        f"{mention}, укажи ставку!\n\n"
+                        f"Пример: <code>белка 1000</code>",
+                        parse_mode="HTML")
+            return
+        
+        try:
+            bet = int(parts[1])
+            if bet <= 0:
+                bot.reply_to(message, "❌ Ставка должна быть больше 0!")
+                return
+        except ValueError:
+            bot.reply_to(message, "❌ Ставка должна быть числом!")
+            return
+        
+        # Проверяем баланс
+        user_data = get_user_data(user_id)
+        if user_data["balance"] < bet:
+            bot.reply_to(message, 
+                        f"❌ {mention}, недостаточно средств!\n\n"
+                        f"💰 Нужно: <code>{format_number(bet)}$</code>\n"
+                        f"💳 У тебя: <code>{format_number(user_data['balance'])}$</code>",
+                        parse_mode="HTML")
+            return
+        
+        # Списываем ставку
+        user_data["balance"] -= bet
+        save_casino_data()
+        
+        # Генерируем ID игры
+        game_id = str(uuid.uuid4())[:8]
+        
+        # Рандомно выбираем клетку с белкой (0 или 1)
+        squirrel_cell = random.randint(0, 1)
+        
+        # Сохраняем игру
+        active_squirrel_games[game_id] = {
+            "user_id": user_id,
+            "bet": bet,
+            "squirrel_cell": squirrel_cell,
+            "active": True,
+            "message_id": None,
+            "chat_id": message.chat.id
+        }
+        
+        # Создаем клавиатуру (кнопки вертикально)
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("❓ Клетка 1", callback_data=f"squirrel_0_{game_id}_{user_id}"))
+        kb.add(InlineKeyboardButton("❓ Клетка 2", callback_data=f"squirrel_1_{game_id}_{user_id}"))
+        
+        # Отправляем сообщение
+        game_text = f"{mention}, <b>найди белку 🐿️</b>\n\nВыбери клетку:"
+        msg = bot.reply_to(message, game_text, parse_mode="HTML", reply_markup=kb)
+        
+        # Сохраняем ID сообщения
+        active_squirrel_games[game_id]["message_id"] = msg.message_id
+        
+        # Удаляем команду пользователя (для чистоты чата)
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"Ошибка в игре белка: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при создании игры!")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("squirrel_"))
+def squirrel_callback(call):
+    """Обработчик нажатия на кнопки"""
+    try:
+        # Разбираем callback_data: squirrel_клетка_gameid_userid
+        parts = call.data.split("_")
+        cell = int(parts[1])  # 0 или 1
+        game_id = parts[2]
+        owner_id = int(parts[3])
+        
+        # Проверяем владельца
+        if not check_squirrel_owner(call, owner_id):
+            return
+        
+        # Получаем игру
+        game = active_squirrel_games.get(game_id)
+        if not game:
+            bot.answer_callback_query(call.id, "❌ Игра не найдена!", show_alert=True)
+            return
+        
+        # Проверяем, активна ли игра
+        if not game["active"]:
+            bot.answer_callback_query(call.id, "❌ Игра уже завершена!", show_alert=True)
+            return
+        
+        # Помечаем игру как неактивную (чтобы второй раз не нажали)
+        game["active"] = False
+        
+        # Получаем данные
+        user_id = owner_id
+        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
+        bet = game["bet"]
+        squirrel_cell = game["squirrel_cell"]
+        
+        # Создаем клавиатуру с результатом (без возможности нажатия)
+        result_kb = InlineKeyboardMarkup()
+        
+        if cell == squirrel_cell:
+            # ПОБЕДА - игрок нашел белку
+            win_amount = bet * 3
+            user_data = get_user_data(user_id)
+            user_data["balance"] += win_amount
+            save_casino_data()
+            
+            # Показываем, где была белка
+            if squirrel_cell == 0:
+                result_kb.add(InlineKeyboardButton("🐿️ Белка тут!", callback_data="squirrel_done"))
+                result_kb.add(InlineKeyboardButton("❌ Пусто", callback_data="squirrel_done"))
+            else:
+                result_kb.add(InlineKeyboardButton("❌ Пусто", callback_data="squirrel_done"))
+                result_kb.add(InlineKeyboardButton("🐿️ Белка тут!", callback_data="squirrel_done"))
+            
+            # Текст победы
+            result_text = (f"{mention}, <b>ты нашёл белку! 🐿️</b>\n\n"
+                          f"💰 Твоя ставка <code>{format_number(bet)}$</code> утроилась!\n"
+                          f"🎉 Ты получил <code>{format_number(win_amount)}$</code>")
+            
+        else:
+            # ПРОИГРЫШ - игрок не нашел белку
+            # Показываем, где была белка
+            if squirrel_cell == 0:
+                result_kb.add(InlineKeyboardButton("🐿️ Белка была тут!", callback_data="squirrel_done"))
+                result_kb.add(InlineKeyboardButton("❌ Пусто", callback_data="squirrel_done"))
+            else:
+                result_kb.add(InlineKeyboardButton("❌ Пусто", callback_data="squirrel_done"))
+                result_kb.add(InlineKeyboardButton("🐿️ Белка была тут!", callback_data="squirrel_done"))
+            
+            # Текст проигрыша
+            result_text = (f"{mention}, <b>к сожалению, белка была не тут 😔</b>\n\n"
+                          f"💸 Ты потерял ставку <code>{format_number(bet)}$</code>")
+        
+        # Редактируем сообщение с результатом
+        bot.edit_message_text(
+            result_text,
+            game["chat_id"],
+            game["message_id"],
+            parse_mode="HTML",
+            reply_markup=result_kb
+        )
+        
+        # Удаляем игру из активных через 5 минут (чтобы не засорять память)
+        def delete_game():
+            time.sleep(300)
+            if game_id in active_squirrel_games:
+                del active_squirrel_games[game_id]
+        
+        threading.Thread(target=delete_game, daemon=True).start()
+        
+        bot.answer_callback_query(call.id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике белки: {e}")
+        bot.answer_callback_query(call.id, "❌ Произошла ошибка!", show_alert=True)
+
+# Заглушка для неактивных кнопок (чтобы не было ошибок)
+@bot.callback_query_handler(func=lambda c: c.data == "squirrel_done")
+def squirrel_done_callback(call):
+    bot.answer_callback_query(call.id, "🎮 Игра уже завершена")
 # ================== MINES 5x5 СТАНДАРТНАЯ ВЕРСИЯ ==================
 
 # Глобальные переменные для конфигурации мин (изменяются через админ-команды)
