@@ -8392,7 +8392,7 @@ def squirrel_callback(call):
         
         if cell == squirrel_cell:
             # ПОБЕДА - игрок нашел белку
-            win_amount = bet * 3
+            win_amount = bet * 2
             user_data = get_user_data(user_id)
             user_data["balance"] += win_amount
             save_casino_data()
@@ -8407,7 +8407,7 @@ def squirrel_callback(call):
             
             # Текст победы
             result_text = (f"{mention}, <b>ты нашёл белку! 🐿️</b>\n\n"
-                          f"💰 Твоя ставка <code>{format_number(bet)}$</code> утроилась!\n"
+                          f"💰 Твоя ставка <code>{format_number(bet)}$</code> удвоилась!\n"
                           f"🎉 Ты получил <code>{format_number(win_amount)}$</code>")
             
         else:
@@ -9032,11 +9032,11 @@ def mines_keyboard(user_id, reveal_all=False, hide_buttons=False):
             if i in u["mines_positions"]:  
                 text = "  💣  "
             else:
-                text = "  💎  "
+                text = "         "
         else:  
             # Показываем открытые клетки или неизвестные
             if i in u["mines_open"]:  
-                text = "  💎  "  # Безопасная клетка
+                text = "        "  # Безопасная клетка
             else:  
                 text = "  ❓  "  # Неоткрытая клетка
 
@@ -9057,7 +9057,7 @@ def mines_keyboard(user_id, reveal_all=False, hide_buttons=False):
         if not u["mines_started"]:  
             # Кнопка отмены в начале игры
             kb.row(  
-                InlineKeyboardButton(" ❌ Отменить игру", callback_data=f"mines_cancel_{user_id}")  
+                InlineKeyboardButton(" Отменить игру", callback_data=f"mines_cancel_{user_id}")  
             )  
         else:  
             # Кнопка забрать выигрыш во время игры
@@ -9812,6 +9812,8 @@ HELP_CONTENT = {
 
 [🃏] <b>играть [ставка]</b>
 [🎰] <b>слот [ставка]</b>
+[🐿️] <b>белка [ставка]</b>
+[🇪🇬] <b>пирамида [ставка]</b>]
 [🏎️] <b>разгон [ставка]</b>
 [💣] <b>мины [ставка]</b>
 [🔴] <b>[ставка] к/ч | Ставка на красное или чёрное</b>
