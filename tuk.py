@@ -1693,7 +1693,161 @@ def unban_user(message):
     
   
 
+# =========================================================
+# 🏴‍☠️ Игра "Сундуки сокровища" PRO
+# =========================================================
 
+treasure_games = {}
+
+CHEST = "📦"
+OPEN = "🗝"
+GOLD = "💎"
+JACKPOT = "👑"
+EMPTY = "💀"
+
+WIN_CHANCE = 0.4      # 40% шанс выиграть
+JACKPOT_CHANCE = 0.1  # 10% шанс джекпота среди побед
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("клад "))
+def treasure_game_start(message):
+    user_id = message.from_user.id
+    args = message.text.split()
+
+    if len(args) != 2:
+        bot.reply_to(message, "❌ Использование: <code>клад (ставка)</code>", parse_mode="HTML")
+        return
+
+    try:
+        bet = int(args[1])
+        if bet <= 0:
+            raise ValueError
+    except:
+        bot.reply_to(message, "❌ Ставка должна быть положительным числом.")
+        return
+
+    user_data = get_user_data(user_id)
+
+    if user_data["balance"] < bet:
+        bot.reply_to(message, "❌ Недостаточно средств.")
+        return
+
+    # списываем ставку
+    user_data["balance"] -= bet
+    save_casino_data()
+
+    # определяем будет ли выигрыш
+    is_win = random.random() < WIN_CHANCE
+    win_chest = random.randint(1, 3)
+
+    jackpot = False
+    multiplier = 0
+
+    if is_win:
+        if random.random() < JACKPOT_CHANCE:
+            multiplier = 5
+            jackpot = True
+        else:
+            multiplier = 3
+
+    treasure_games[user_id] = {
+        "bet": bet,
+        "win_chest": win_chest,
+        "is_win": is_win,
+        "multiplier": multiplier,
+        "jackpot": jackpot
+    }
+
+    kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton(f"{CHEST} ⚓ Первый сундук", callback_data=f"treasure_{user_id}_1"),
+        InlineKeyboardButton(f"{CHEST} 🗺 Второй сундук", callback_data=f"treasure_{user_id}_2"),
+        InlineKeyboardButton(f"{CHEST} 🏝 Третий сундук", callback_data=f"treasure_{user_id}_3"),
+    )
+
+    bot.reply_to(
+        message,
+        f"🏴‍☠️ <b>Пират:</b>\n\n"
+        f"Один сундук скрывает сокровище...\n"
+        f"🎲 Ставка: <b>{bet}$</b>\n\n"
+        f"Выбирай wisely 😈",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("treasure_"))
+def treasure_choose(call):
+    parts = call.data.split("_")
+    owner_id = int(parts[1])
+    chosen = int(parts[2])
+
+    if call.from_user.id != owner_id:
+        bot.answer_callback_query(call.id, "❌ Это не твоя игра!", show_alert=True)
+        return
+
+    if owner_id not in treasure_games:
+        bot.answer_callback_query(call.id, "❌ Игра не найдена.")
+        return
+
+    game = treasure_games.pop(owner_id)
+    bet = game["bet"]
+    win_chest = game["win_chest"]
+    is_win = game["is_win"]
+    multiplier = game["multiplier"]
+    jackpot = game["jackpot"]
+
+    # АНИМАЦИЯ ОТКРЫТИЯ
+    bot.edit_message_text(
+        "🗝 Открываем сундук...\n\n⏳",
+        call.message.chat.id,
+        call.message.message_id
+    )
+
+    time.sleep(1.2)
+
+    user_data = get_user_data(owner_id)
+
+    if is_win and chosen == win_chest:
+        win_amount = bet * multiplier
+        user_data["balance"] += win_amount
+
+        if jackpot:
+            result_text = (
+                f"{JACKPOT} <b>ДЖЕКПОТ!!!</b>\n\n"
+                f"Ты сорвал x5 🔥\n"
+                f"💰 Выигрыш: <b>{win_amount}$</b>"
+            )
+        else:
+            result_text = (
+                f"{GOLD} <b>СОКРОВИЩЕ!</b>\n\n"
+                f"💰 Выигрыш: <b>{win_amount}$</b>"
+            )
+    else:
+        result_text = (
+            f"{EMPTY} <b>Пусто...</b>\n\n"
+            f"Сокровища были в сундуке №{win_chest}"
+        )
+
+    save_casino_data()
+
+    # Показываем все сундуки
+    kb = InlineKeyboardMarkup(row_width=1)
+    for i in range(1, 4):
+        if i == win_chest and is_win:
+            text = f"{GOLD} Сундук №{i}"
+        else:
+            text = f"{EMPTY} Сундук №{i}"
+        kb.add(InlineKeyboardButton(text, callback_data="none"))
+
+    bot.edit_message_text(
+        f"{result_text}\n\n🎲 Ставка: <b>{bet}$</b>",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    bot.answer_callback_query(call.id)
 
 
 # ================== БАНКОВСКАЯ СИСТЕМА MEOW BANK ==================
@@ -9812,8 +9966,9 @@ HELP_CONTENT = {
 
 [🃏] <b>играть [ставка]</b>
 [🎰] <b>слот [ставка]</b>
+[🏴‍☠️] <b>клад [ставка]</b>
 [🐿️] <b>белка [ставка]</b>
-[🇪🇬] <b>пирамида [ставка]</b>]
+[🇪🇬] <b>пирамида [ставка]</b>
 [🏎️] <b>разгон [ставка]</b>
 [💣] <b>мины [ставка]</b>
 [🔴] <b>[ставка] к/ч | Ставка на красное или чёрное</b>
