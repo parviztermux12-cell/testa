@@ -1693,161 +1693,7 @@ def unban_user(message):
     
   
 
-# =========================================================
-# 🏴‍☠️ Игра "Сундуки сокровища" PRO
-# =========================================================
 
-treasure_games = {}
-
-CHEST = "📦"
-OPEN = "🗝"
-GOLD = "💎"
-JACKPOT = "👑"
-EMPTY = "💀"
-
-WIN_CHANCE = 0.4      # 40% шанс выиграть
-JACKPOT_CHANCE = 0.1  # 10% шанс джекпота среди побед
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("клад "))
-def treasure_game_start(message):
-    user_id = message.from_user.id
-    args = message.text.split()
-
-    if len(args) != 2:
-        bot.reply_to(message, "❌ Использование: <code>клад (ставка)</code>", parse_mode="HTML")
-        return
-
-    try:
-        bet = int(args[1])
-        if bet <= 0:
-            raise ValueError
-    except:
-        bot.reply_to(message, "❌ Ставка должна быть положительным числом.")
-        return
-
-    user_data = get_user_data(user_id)
-
-    if user_data["balance"] < bet:
-        bot.reply_to(message, "❌ Недостаточно средств.")
-        return
-
-    # списываем ставку
-    user_data["balance"] -= bet
-    save_casino_data()
-
-    # определяем будет ли выигрыш
-    is_win = random.random() < WIN_CHANCE
-    win_chest = random.randint(1, 3)
-
-    jackpot = False
-    multiplier = 0
-
-    if is_win:
-        if random.random() < JACKPOT_CHANCE:
-            multiplier = 5
-            jackpot = True
-        else:
-            multiplier = 3
-
-    treasure_games[user_id] = {
-        "bet": bet,
-        "win_chest": win_chest,
-        "is_win": is_win,
-        "multiplier": multiplier,
-        "jackpot": jackpot
-    }
-
-    kb = InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        InlineKeyboardButton(f"{CHEST} ⚓ Первый сундук", callback_data=f"treasure_{user_id}_1"),
-        InlineKeyboardButton(f"{CHEST} 🗺 Второй сундук", callback_data=f"treasure_{user_id}_2"),
-        InlineKeyboardButton(f"{CHEST} 🏝 Третий сундук", callback_data=f"treasure_{user_id}_3"),
-    )
-
-    bot.reply_to(
-        message,
-        f"🏴‍☠️ <b>Пират:</b>\n\n"
-        f"Один сундук скрывает сокровище...\n"
-        f"🎲 Ставка: <b>{bet}$</b>\n\n"
-        f"Выбирай wisely 😈",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("treasure_"))
-def treasure_choose(call):
-    parts = call.data.split("_")
-    owner_id = int(parts[1])
-    chosen = int(parts[2])
-
-    if call.from_user.id != owner_id:
-        bot.answer_callback_query(call.id, "❌ Это не твоя игра!", show_alert=True)
-        return
-
-    if owner_id not in treasure_games:
-        bot.answer_callback_query(call.id, "❌ Игра не найдена.")
-        return
-
-    game = treasure_games.pop(owner_id)
-    bet = game["bet"]
-    win_chest = game["win_chest"]
-    is_win = game["is_win"]
-    multiplier = game["multiplier"]
-    jackpot = game["jackpot"]
-
-    # АНИМАЦИЯ ОТКРЫТИЯ
-    bot.edit_message_text(
-        "🗝 Открываем сундук...\n\n⏳",
-        call.message.chat.id,
-        call.message.message_id
-    )
-
-    time.sleep(1.2)
-
-    user_data = get_user_data(owner_id)
-
-    if is_win and chosen == win_chest:
-        win_amount = bet * multiplier
-        user_data["balance"] += win_amount
-
-        if jackpot:
-            result_text = (
-                f"{JACKPOT} <b>ДЖЕКПОТ!!!</b>\n\n"
-                f"Ты сорвал x5 🔥\n"
-                f"💰 Выигрыш: <b>{win_amount}$</b>"
-            )
-        else:
-            result_text = (
-                f"{GOLD} <b>СОКРОВИЩЕ!</b>\n\n"
-                f"💰 Выигрыш: <b>{win_amount}$</b>"
-            )
-    else:
-        result_text = (
-            f"{EMPTY} <b>Пусто...</b>\n\n"
-            f"Сокровища были в сундуке №{win_chest}"
-        )
-
-    save_casino_data()
-
-    # Показываем все сундуки
-    kb = InlineKeyboardMarkup(row_width=1)
-    for i in range(1, 4):
-        if i == win_chest and is_win:
-            text = f"{GOLD} Сундук №{i}"
-        else:
-            text = f"{EMPTY} Сундук №{i}"
-        kb.add(InlineKeyboardButton(text, callback_data="none"))
-
-    bot.edit_message_text(
-        f"{result_text}\n\n🎲 Ставка: <b>{bet}$</b>",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-    bot.answer_callback_query(call.id)
 
 
 # ================== БАНКОВСКАЯ СИСТЕМА MEOW BANK ==================
@@ -7884,7 +7730,270 @@ def show_roulette_logs(message):
 
 print("✅ Новая улучшенная система рулетки загружена!")
         
+# ================== КОЛОДА СУДЬБЫ ==================
+import uuid
+import random
+import threading
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+deck_games = {}
+deck_locks = {}
+
+CARD_BACK = "🃏"
+CARD_GREEN = "🟢"
+CARD_RED = "🔴"
+CARD_DIAMOND = "💎"
+
+DECK_EFFECTS = {
+    1: (1.2, 0.2, 5.0),
+    2: (1.5, 0.3, 8.0),
+    3: (2.0, 0.5, 12.0),
+    4: (3.0, 0.8, 20.0),
+}
+
+MAX_STEP_EFFECTS = (5.0, 1.0, 50.0)
+
+def check_deck_owner(call, user_id):
+    if call.from_user.id != user_id:
+        bot.answer_callback_query(call.id, "❌ Не твоя игра!", show_alert=True)
+        return False
+    return True
+
+def deck_keyboard(game_id):
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton(f"{CARD_BACK}", callback_data=f"deck_pick_{game_id}_1"),
+        InlineKeyboardButton(f"{CARD_BACK}", callback_data=f"deck_pick_{game_id}_2")
+    )
+    kb.add(
+        InlineKeyboardButton(f"{CARD_BACK}", callback_data=f"deck_pick_{game_id}_3"),
+        InlineKeyboardButton(f"{CARD_BACK}", callback_data=f"deck_pick_{game_id}_4")
+    )
+    
+    game = deck_games[game_id]
+    current_win = int(game["bet"] * game["multiplier"])
+    kb.add(InlineKeyboardButton(f"💰 Забрать {format_number(current_win)}$", callback_data=f"deck_cashout_{game_id}"))
+    return kb
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("колода "))
+def start_deck_game(message):
+    try:
+        user_id = message.from_user.id
+        parts = message.text.split()
+        
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Укажи ставку\nПример: колода 5000")
+            return
+        
+        try:
+            bet = int(parts[1])
+            if bet < 100:
+                bot.reply_to(message, "❌ Минимум 100$")
+                return
+        except ValueError:
+            bot.reply_to(message, "❌ Ставка должна быть числом")
+            return
+        
+        user_data = get_user_data(user_id)
+        if user_data["balance"] < bet:
+            bot.reply_to(message, f"❌ Недостаточно средств")
+            return
+        
+        user_data["balance"] -= bet
+        save_casino_data()
+        
+        game_id = str(uuid.uuid4())[:8]
+        deck_games[game_id] = {
+            "user_id": user_id,
+            "bet": bet,
+            "multiplier": 1.0,
+            "step": 1,
+            "status": "playing",
+            "chat_id": message.chat.id,
+            "message_id": None,
+            "history": []
+        }
+        deck_locks[game_id] = threading.Lock()
+        
+        current_win = int(bet * 1.0)
+        text = (
+            f"🎰 Колода Судьбы\n"
+            f"💰 Ставка: {format_number(bet)}$\n"
+            f"💎 Выигрыш: {format_number(current_win)}$\n"
+            f"📊 Ход: 1\n"
+            f"━━━━━━━━━\n"
+            f"🟢 x1.2 | 🔴 -20% | 💎 x5"
+        )
+        
+        msg = bot.send_message(message.chat.id, text, reply_markup=deck_keyboard(game_id))
+        deck_games[game_id]["message_id"] = msg.message_id
+        
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+        except:
+            pass
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("deck_pick_"))
+def deck_pick_card(call):
+    try:
+        game_id = call.data.split("_")[2]
+        
+        if game_id not in deck_games:
+            bot.answer_callback_query(call.id, "❌ Игра не найдена")
+            return
+        
+        with deck_locks[game_id]:
+            game = deck_games[game_id]
+            
+            if not check_deck_owner(call, game["user_id"]):
+                return
+            
+            if game["status"] != "playing":
+                bot.answer_callback_query(call.id, "❌ Игра завершена")
+                return
+            
+            rand = random.random()
+            if rand < 0.6:
+                card_type = "green"
+                card_emoji = CARD_GREEN
+            elif rand < 0.9:
+                card_type = "red"
+                card_emoji = CARD_RED
+            else:
+                card_type = "diamond"
+                card_emoji = CARD_DIAMOND
+            
+            step = game["step"]
+            if step > 4:
+                green_mult, red_damage, diamond_mult = MAX_STEP_EFFECTS
+            else:
+                green_mult, red_damage, diamond_mult = DECK_EFFECTS[step]
+            
+            if card_type == "green":
+                game["multiplier"] *= green_mult
+                effect = f"🟢 +{green_mult}x"
+            elif card_type == "red":
+                damage = int(game["bet"] * red_damage)
+                current_win = int(game["bet"] * game["multiplier"])
+                new_win = max(0, current_win - damage)
+                game["multiplier"] = new_win / game["bet"] if game["bet"] > 0 else 0
+                effect = f"🔴 -{int(red_damage*100)}%"
+            else:
+                game["multiplier"] *= diamond_mult
+                effect = f"💎 +{diamond_mult}x"
+            
+            game["history"].append(card_type)
+            
+            if game["multiplier"] <= 0:
+                game["status"] = "finished"
+                bot.edit_message_text(
+                    f"💥 Ты проиграл {format_number(game['bet'])}$\n📊 Ходов: {len(game['history'])}",
+                    game["chat_id"],
+                    game["message_id"]
+                )
+                del deck_games[game_id]
+                del deck_locks[game_id]
+                bot.answer_callback_query(call.id, "💥 Проигрыш")
+                return
+            
+            game["step"] += 1
+            current_win = int(game["bet"] * game["multiplier"])
+            
+            if current_win > 1000000000:
+                game["status"] = "finished"
+                user_data = get_user_data(game["user_id"])
+                user_data["balance"] += current_win
+                save_casino_data()
+                bot.edit_message_text(
+                    f"🎉 Ты выиграл {format_number(current_win)}$",
+                    game["chat_id"],
+                    game["message_id"]
+                )
+                del deck_games[game_id]
+                del deck_locks[game_id]
+                bot.answer_callback_query(call.id, f"🎉 +{format_number(current_win)}$")
+                return
+            
+            next_step = game["step"]
+            if next_step > 4:
+                g, r, d = MAX_STEP_EFFECTS
+                effects = f"🟢 x{g} | 🔴 -{int(r*100)}% | 💎 x{d}"
+            else:
+                g, r, d = DECK_EFFECTS[next_step]
+                effects = f"🟢 x{g} | 🔴 -{int(r*100)}% | 💎 x{d}"
+            
+            text = (
+                f"🎰 Колода Судьбы\n"
+                f"💰 Ставка: {format_number(game['bet'])}$\n"
+                f"💎 Выигрыш: {format_number(current_win)}$\n"
+                f"📊 Ход: {game['step']}\n"
+                f"━━━━━━━━━\n"
+                f"{card_emoji} {effect}\n"
+                f"━━━━━━━━━\n"
+                f"{effects}"
+            )
+            
+            bot.edit_message_text(
+                text,
+                game["chat_id"],
+                game["message_id"],
+                reply_markup=deck_keyboard(game_id)
+            )
+            
+            bot.answer_callback_query(call.id, f"✅")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("deck_cashout_"))
+def deck_cashout(call):
+    try:
+        game_id = call.data.split("_")[2]
+        
+        if game_id not in deck_games:
+            bot.answer_callback_query(call.id, "❌ Игра не найдена")
+            return
+        
+        with deck_locks[game_id]:
+            game = deck_games[game_id]
+            
+            if not check_deck_owner(call, game["user_id"]):
+                return
+            
+            if game["status"] != "playing":
+                bot.answer_callback_query(call.id, "❌ Игра завершена")
+                return
+            
+            game["status"] = "finished"
+            win_amount = int(game["bet"] * game["multiplier"])
+            
+            user_data = get_user_data(game["user_id"])
+            user_data["balance"] += win_amount
+            save_casino_data()
+            
+            history = ""
+            for i, h in enumerate(game["history"], 1):
+                card = "🟢" if h == "green" else ("🔴" if h == "red" else "💎")
+                history += card
+            
+            bot.edit_message_text(
+                f"💰 Ты забрал {format_number(win_amount)}$\n"
+                f"📊 Ходов: {len(game['history'])} {history}",
+                game["chat_id"],
+                game["message_id"]
+            )
+            
+            del deck_games[game_id]
+            del deck_locks[game_id]
+            bot.answer_callback_query(call.id, f"✅ +{format_number(win_amount)}$")
+            
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+
+print("✅ Колода Судьбы загружена")
         
 # ================== ФУТБОЛ / БАСКЕТБОЛ / ТИР (50/50) БЕЗ АНИМАЦИИ ==================
 
@@ -8047,372 +8156,7 @@ def shooting_game(message):
 
 print("✅ Игры футбол/баскетбол/тир с честными 50/50 загружены! ⚽🏀🎯")
 
-# ================== ИГРА "ПИРАМИДА" С ЭМОДЗИ ==================
-# 10 уровней, на каждом уровне свой эмодзи
-# В каждом уровне 4 кнопки с ОДИНАКОВЫМ эмодзи
-# Только 1 клетка проход, 3 - проигрыш
 
-# Эмодзи для каждого уровня (все 4 кнопки уровня имеют одинаковый эмодзи)
-PYRAMID_EMOJIS = [
-    "🪨",  # Уровень 1 - Камень
-    "🌿",  # Уровень 2 - Трава
-    "🔥",  # Уровень 3 - Огонь
-    "💧",  # Уровень 4 - Вода
-    "🌪️",  # Уровень 5 - Вихрь
-    "❄️",  # Уровень 6 - Лёд
-    "⚡",  # Уровень 7 - Молния
-    "💎",  # Уровень 8 - Алмаз
-    "👑",  # Уровень 9 - Корона
-    "🌟"   # Уровень 10 - Звезда
-]
-
-# Множители для каждого уровня
-PYRAMID_MULTIPLIERS = [1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.0, 10.0, 15.0]
-
-# Хранилище активных игр
-active_pyramid_games = {}
-
-def generate_pyramid_keyboard(user_id, game_id, level, show_all=False):
-    """Создает клавиатуру для текущего уровня пирамиды"""
-    kb = InlineKeyboardMarkup(row_width=2)
-    
-    # Получаем данные игры
-    game = active_pyramid_games.get(game_id, {})
-    if not game:
-        return kb
-    
-    # Эмодзи для текущего уровня
-    current_emoji = PYRAMID_EMOJIS[level]
-    
-    # Генерируем 4 клетки (A, B, C, D) с ОДИНАКОВЫМ эмодзи
-    buttons = []
-    for i, cell in enumerate(["A", "B", "C", "D"]):
-        if show_all:
-            # Режим показа результатов (после окончания игры)
-            if cell == game["correct_cells"][level]:
-                text = f"✅ {current_emoji} (проход)"
-            else:
-                text = f"❌ {current_emoji}"
-        else:
-            # Обычный режим игры - все кнопки одинаковые
-            text = f"{current_emoji} Клетка {cell}"
-        
-        buttons.append(
-            InlineKeyboardButton(
-                text, 
-                callback_data=f"pyramid_cell_{game_id}_{cell}_{user_id}" if not show_all else "pyramid_finished"
-            )
-        )
-    
-    # Располагаем кнопки в 2 ряда по 2
-    kb.add(buttons[0], buttons[1])
-    kb.add(buttons[2], buttons[3])
-    
-    # Кнопка "Забрать выигрыш" (только во время игры)
-    if not show_all:
-        if level == 0:
-            current_win = game["bet"]
-            mult_text = "1x"
-        else:
-            current_mult = PYRAMID_MULTIPLIERS[level - 1]
-            current_win = int(game["bet"] * current_mult)
-            mult_text = f"{current_mult}x"
-        
-        kb.add(InlineKeyboardButton(
-            f"💰 Забрать {format_number(current_win)}$ ({mult_text})", 
-            callback_data=f"pyramid_cashout_{game_id}_{user_id}"
-        ))
-    
-    return kb
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("пирамида"))
-def pyramid_start(message):
-    try:
-        user_id = message.from_user.id
-        mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-        
-        # Парсим ставку
-        parts = message.text.split()
-        if len(parts) < 2:
-            # Красивое описание игры
-            rules_text = (
-                f"🏛️ <b>ПИРАМИДА</b> | {mention}\n\n"
-                f"<b>📜 ПРАВИЛА:</b>\n"
-                f"• 10 уровней пирамиды\n"
-                f"• На каждом уровне свой символ: {PYRAMID_EMOJIS[0]} → {PYRAMID_EMOJIS[1]} → {PYRAMID_EMOJIS[2]} ...\n"
-                f"• 4 клетки, только 1 ведёт дальше\n"
-                f"• Остальные 3 - проигрыш\n\n"
-                f"<b>📈 МНОЖИТЕЛИ:</b>\n"
-            )
-            
-            # Добавляем множители красиво
-            for i in range(0, 10, 2):
-                if i+1 < 10:
-                    rules_text += f"• Ур.{i+1}: {PYRAMID_EMOJIS[i]} x{PYRAMID_MULTIPLIERS[i]}  |  Ур.{i+2}: {PYRAMID_EMOJIS[i+1]} x{PYRAMID_MULTIPLIERS[i+1]}\n"
-                else:
-                    rules_text += f"• Ур.{i+1}: {PYRAMID_EMOJIS[i]} x{PYRAMID_MULTIPLIERS[i]}\n"
-            
-            rules_text += f"\n💰 <b>Твой баланс:</b> {format_number(get_user_data(user_id)['balance'])}$\n"
-            rules_text += f"📝 <b>Пример:</b> <code>пирамида 1000</code>"
-            
-            bot.reply_to(message, rules_text, parse_mode="HTML")
-            return
-        
-        try:
-            bet = int(parts[1])
-            if bet < 100:
-                bot.reply_to(message, "❌ Минимальная ставка: 100$")
-                return
-        except ValueError:
-            bot.reply_to(message, "❌ Ставка должна быть числом!")
-            return
-        
-        user_data = get_user_data(user_id)
-        if user_data["balance"] < bet:
-            bot.reply_to(message, f"❌ Недостаточно средств! Твой баланс: {format_number(user_data['balance'])}$")
-            return
-        
-        # Списываем ставку
-        user_data["balance"] -= bet
-        save_casino_data()
-        
-        # Генерируем правильные клетки для всех 10 уровней
-        correct_cells = []
-        for _ in range(10):
-            correct_cells.append(random.choice(["A", "B", "C", "D"]))
-        
-        # Создаем игру
-        game_id = str(uuid.uuid4())[:8]
-        active_pyramid_games[game_id] = {
-            "user_id": user_id,
-            "bet": bet,
-            "level": 0,
-            "correct_cells": correct_cells,
-            "status": "playing",
-            "chat_id": message.chat.id,
-            "message_id": None,
-            "start_time": time.time()
-        }
-        
-        # Текст для 1 уровня
-        current_emoji = PYRAMID_EMOJIS[0]
-        
-        text = (
-            f"🏛️ <b>ПИРАМИДА - УРОВЕНЬ 1</b> | {mention}\n\n"
-            f"💰 Ставка: {format_number(bet)}$\n"
-            f"📊 Эмодзи уровня: {current_emoji}\n"
-            f"📈 Множитель: <b>x{PYRAMID_MULTIPLIERS[0]}</b>\n"
-            f"💎 Возможный выигрыш: <b>{format_number(int(bet * PYRAMID_MULTIPLIERS[0]))}$</b>\n\n"
-            f"<i>Все 4 клетки выглядят одинаково, но только 1 ведёт дальше!</i>"
-        )
-        
-        msg = bot.send_message(
-            message.chat.id,
-            text,
-            parse_mode="HTML",
-            reply_markup=generate_pyramid_keyboard(user_id, game_id, 0)
-        )
-        
-        active_pyramid_games[game_id]["message_id"] = msg.message_id
-        logger.info(f"Пирамида: {user_id} начал игру со ставкой {bet}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка запуска пирамиды: {e}")
-        bot.reply_to(message, "❌ Ошибка при запуске игры!")
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("pyramid_cell_"))
-def pyramid_cell_callback(call):
-    try:
-        parts = call.data.split("_")
-        game_id = parts[2]
-        cell = parts[3]
-        owner_id = int(parts[4])
-        
-        # ЗАЩИТА: проверяем владельца игры
-        if call.from_user.id != owner_id:
-            bot.answer_callback_query(call.id, "❌ Это не твоя пирамида!", show_alert=True)
-            return
-        
-        # Получаем игру
-        game = active_pyramid_games.get(game_id)
-        if not game or game["status"] != "playing":
-            bot.answer_callback_query(call.id, "❌ Игра уже завершена!", show_alert=True)
-            return
-        
-        user_id = game["user_id"]
-        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
-        level = game["level"]
-        
-        # Проверяем правильность клетки
-        correct_cell = game["correct_cells"][level]
-        
-        if cell == correct_cell:
-            # ✅ ПРОХОД НА СЛЕДУЮЩИЙ УРОВЕНЬ
-            game["level"] += 1
-            new_level = game["level"]
-            
-            # Проверяем, не прошли ли всю пирамиду
-            if new_level >= 10:
-                # 🎉 ПОБЕДА! Прошли все 10 уровней
-                win_mult = PYRAMID_MULTIPLIERS[-1]
-                win_amount = int(game["bet"] * win_mult)
-                final_emoji = PYRAMID_EMOJIS[-1]
-                
-                user_data = get_user_data(user_id)
-                user_data["balance"] += win_amount
-                game["status"] = "won"
-                save_casino_data()
-                
-                text = (
-                    f"🏛️ <b>ПИРАМИДА ПОКОРЕНА!</b> 🎉\n\n"
-                    f"{mention}, ты прошёл все 10 уровней!\n\n"
-                    f"💰 Ставка: {format_number(game['bet'])}$\n"
-                    f"📈 Итоговый множитель: <b>x{win_mult}</b>\n"
-                    f"💎 Выигрыш: <b>{format_number(win_amount)}$</b>\n"
-                    f"🏆 Финальный символ: {final_emoji}\n\n"
-                    f"🏆 Поздравляю с победой!"
-                )
-                
-                bot.edit_message_text(
-                    text,
-                    game["chat_id"],
-                    game["message_id"],
-                    parse_mode="HTML",
-                    reply_markup=generate_pyramid_keyboard(user_id, game_id, new_level-1, show_all=True)
-                )
-                
-                bot.answer_callback_query(call.id, f"🎉 Ты выиграл {format_number(win_amount)}$!")
-                
-                # Удаляем игру через 5 минут
-                threading.Timer(300, lambda: active_pyramid_games.pop(game_id, None)).start()
-                return
-            
-            # Переходим на следующий уровень
-            current_emoji = PYRAMID_EMOJIS[new_level]
-            current_mult = PYRAMID_MULTIPLIERS[new_level]
-            current_win = int(game["bet"] * current_mult)
-            
-            text = (
-                f"🏛️ <b>ПИРАМИДА - УРОВЕНЬ {new_level+1}</b> | {mention}\n\n"
-                f"✅ Уровень <b>{level+1}</b> пройден!\n\n"
-                f"💰 Ставка: {format_number(game['bet'])}$\n"
-                f"📊 Эмодзи уровня: {current_emoji}\n"
-                f"📈 Множитель: <b>x{current_mult}</b>\n"
-                f"💎 Возможный выигрыш: <b>{format_number(current_win)}$</b>\n\n"
-                f"<i>Выбери клетку для следующего уровня.</i>"
-            )
-            
-            bot.edit_message_text(
-                text,
-                game["chat_id"],
-                game["message_id"],
-                parse_mode="HTML",
-                reply_markup=generate_pyramid_keyboard(user_id, game_id, new_level)
-            )
-            
-            bot.answer_callback_query(call.id, f"✅ Уровень {level+1} пройден! (+{current_mult}x)")
-            
-        else:
-            # 💥 ПРОИГРЫШ
-            game["status"] = "lost"
-            current_emoji = PYRAMID_EMOJIS[level]
-            
-            text = (
-                f"🏛️ <b>ПИРАМИДА РУХНУЛА</b> 💥\n\n"
-                f"{mention}, ты выбрал не ту клетку на уровне <b>{level+1}</b>.\n\n"
-                f"💰 Ставка {format_number(game['bet'])}$ сгорела.\n"
-                f"❌ Эмодзи уровня: {current_emoji}\n\n"
-                f"Правильная клетка была: <b>{correct_cell}</b>"
-            )
-            
-            bot.edit_message_text(
-                text,
-                game["chat_id"],
-                game["message_id"],
-                parse_mode="HTML",
-                reply_markup=generate_pyramid_keyboard(user_id, game_id, level, show_all=True)
-            )
-            
-            bot.answer_callback_query(call.id, "💥 Ты проиграл!")
-            
-            # Удаляем игру через 5 минут
-            threading.Timer(300, lambda: active_pyramid_games.pop(game_id, None)).start()
-        
-    except Exception as e:
-        logger.error(f"Ошибка обработки клетки пирамиды: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("pyramid_cashout_"))
-def pyramid_cashout_callback(call):
-    try:
-        parts = call.data.split("_")
-        game_id = parts[2]
-        owner_id = int(parts[3])
-        
-        # ЗАЩИТА: проверяем владельца игры
-        if call.from_user.id != owner_id:
-            bot.answer_callback_query(call.id, "❌ Это не твоя пирамида!", show_alert=True)
-            return
-        
-        game = active_pyramid_games.get(game_id)
-        if not game or game["status"] != "playing":
-            bot.answer_callback_query(call.id, "❌ Игра уже завершена!", show_alert=True)
-            return
-        
-        user_id = game["user_id"]
-        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
-        level = game["level"]
-        
-        # Определяем выигрыш
-        if level == 0:
-            win_amount = game["bet"]
-            mult_text = "1x (возврат ставки)"
-            level_emoji = "🪨"
-        else:
-            current_mult = PYRAMID_MULTIPLIERS[level - 1]
-            win_amount = int(game["bet"] * current_mult)
-            mult_text = f"{current_mult}x"
-            level_emoji = PYRAMID_EMOJIS[level - 1]
-        
-        user_data = get_user_data(user_id)
-        user_data["balance"] += win_amount
-        game["status"] = "cashed_out"
-        save_casino_data()
-        
-        text = (
-            f"🏛️ <b>ПИРАМИДА - ВЫХОД</b> 💰\n\n"
-            f"{mention}, ты забрал выигрыш на уровне <b>{level}</b>.\n\n"
-            f"💰 Ставка: {format_number(game['bet'])}$\n"
-            f"📈 Множитель: {mult_text}\n"
-            f"💎 Выигрыш: <b>{format_number(win_amount)}$</b>\n"
-            f"🎴 Символ уровня: {level_emoji}\n\n"
-            f"Спасибо за игру!"
-        )
-        
-        bot.edit_message_text(
-            text,
-            game["chat_id"],
-            game["message_id"],
-            parse_mode="HTML",
-            reply_markup=generate_pyramid_keyboard(user_id, game_id, level, show_all=True)
-        )
-        
-        bot.answer_callback_query(call.id, f"💰 +{format_number(win_amount)}$")
-        
-        # Удаляем игру через 5 минут
-        threading.Timer(300, lambda: active_pyramid_games.pop(game_id, None)).start()
-        
-    except Exception as e:
-        logger.error(f"Ошибка вывода денег из пирамиды: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-
-@bot.callback_query_handler(func=lambda c: c.data == "pyramid_finished")
-def pyramid_finished_callback(call):
-    """Заглушка для нажатий на завершенную игру"""
-    bot.answer_callback_query(call.id, "⏳ Игра уже завершена")
-
-print("✅ Игра 'Пирамида' с эмодзи загружена! 🏛️")
-print("   Эмодзи уровней: 🪨 → 🌿 → 🔥 → 💧 → 🌪️ → ❄️ → ⚡ → 💎 → 👑 → 🌟")
 
 # ================== 🐿️ ИГРА "НАЙДИ БЕЛКУ" ==================
 
@@ -9966,9 +9710,7 @@ HELP_CONTENT = {
 
 [🃏] <b>играть [ставка]</b>
 [🎰] <b>слот [ставка]</b>
-[🏴‍☠️] <b>клад [ставка]</b>
 [🐿️] <b>белка [ставка]</b>
-[🇪🇬] <b>пирамида [ставка]</b>
 [🏎️] <b>разгон [ставка]</b>
 [💣] <b>мины [ставка]</b>
 [🔴] <b>[ставка] к/ч | Ставка на красное или чёрное</b>
