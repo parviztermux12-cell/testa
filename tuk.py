@@ -3026,6 +3026,7 @@ def start_bonus(message):
 # ======================================================
 # ======================================================
 # ======================================================
+# ======================================================
 #    ПОЛНАЯ КОМАНДА: б / баланс
 # ======================================================
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["б", "баланс"])
@@ -3040,72 +3041,19 @@ def balance_cmd(message):
     # Кликабельное имя
     clickable = f"<a href='tg://user?id={user_id}'>{user.first_name}</a>"
 
-    # Текст баланса
+    # Текст баланса (без лишнего пробела)
     text = (
-        f"{clickable}\n\n"
-        f"💵 Баланс: <code>{format_number(data['balance'])} izzy</code>"
+        f"{clickable}\n"
+        f"💰 Баланс: <code>{format_number(data['balance'])} izzy</code>\n\n"
+        f"🃏 <a href='https://t.me/meow_newsbot'>Наш канал</a>"
     )
-
-    # Клавиатура
-    kb = types.InlineKeyboardMarkup()
-
-    # Проверяем, доступен ли бонус
-    if can_take_daily_bonus(user_id):
-        kb.add(types.InlineKeyboardButton("🎁 Бонус", callback_data=f"claim_bonus_{user_id}"))
 
     bot.send_message(
         message.chat.id,
         text,
         parse_mode="HTML",
-        reply_markup=kb
+        disable_web_page_preview=True
     )
-
-
-# ======================================================
-#    ОБРАБОТЧИК КНОПКИ БОНУСА
-# ======================================================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("claim_bonus_"))
-def claim_bonus_callback(call):
-    user_id = int(call.data.split("_")[2])
-
-    # Защита: чужие не могут нажимать
-    if call.from_user.id != user_id:
-        bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
-        return
-
-    # Проверяем, не получал ли уже бонус
-    if not can_take_daily_bonus(user_id):
-        bot.answer_callback_query(call.id, "❌ Ты уже получил бонус сегодня!", show_alert=True)
-        return
-
-    # Рандомный бонус
-    bonus_amount = random.randint(3000, 10000)
-
-    # Начисляем
-    user_data = get_user_data(user_id)
-    user_data["balance"] += bonus_amount
-    user_data["daily_bonus_claimed"] = date.today().isoformat()
-    save_casino_data()
-
-    # Кликабельное имя
-    clickable = f"<a href='tg://user?id={user_id}'>{call.from_user.first_name}</a>"
-
-    # Новый текст (без кнопки бонуса)
-    new_text = (
-        f"{clickable}\n\n"
-        f"💵 Баланс: <code>{format_number(user_data['balance'])} izzy</code>\n\n"
-        f"✅ Бонус получен! Следующий через 24 часа."
-    )
-
-    # Редактируем сообщение — убираем кнопку
-    bot.edit_message_text(
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        text=new_text,
-        parse_mode="HTML"
-    )
-
-    bot.answer_callback_query(call.id, f"🎉 +{format_number(bonus_amount)} izzy")
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "панель рассылки")
 def broadcast_panel(message):
