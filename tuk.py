@@ -2121,55 +2121,18 @@ def fishing_command(message):
     user_data = result_data
 
     # ===== ИЗНОС БЕЗ РАНДОМА =====
-    rod_broke = check_rod_break(user_data)
 
-    if rod_broke:
-        update_fishing_user(user_id, user_data)
-        bot.reply_to(message, "🎣 Твоя удочка износилась и сломалась.", parse_mode="HTML")
-        return
+# Минус 1 прочность за каждую рыбалку
+user_data["rod_durability"] -= 1
 
-    # 20% шанс что ничего не клюнет (оставляем игровой рандом)
-    if random.random() < 0.2:
-        user_data["energy"] -= 1
-        user_data["last_fishing_time"] = datetime.now().isoformat()
-        update_fishing_user(user_id, user_data)
-
-        bot.reply_to(message, "🎏 На удочку ничего не клюнуло, попробуй ещё раз.", parse_mode="HTML")
-        return
-
-    # Получаем рыбу
-    fish_name = get_random_fish(user_data["rod_id"])
-    fish_data = FISH_DATA[fish_name]
-
-    weight = random.uniform(fish_data["min_weight"], fish_data["max_weight"])
-    unit = fish_data["unit"]
-
-    price_per_kg = fish_data["price"]
-
-    if unit == "тонн":
-        fish_price = int(price_per_kg * 1000 * weight)
-    else:
-        fish_price = int(price_per_kg * weight)
-
-    add_fish_to_inventory(user_id, fish_name, fish_price, 1)
-
-    # Обновляем данные
-    user_data["energy"] -= 1
-    user_data["total_fish_caught"] += 1
-    user_data["last_fishing_time"] = datetime.now().isoformat()
-
+# Если удочка сломалась
+if user_data["rod_durability"] <= 0:
+    user_data["rod_id"] = 0
+    user_data["rod_durability"] = 0
     update_fishing_user(user_id, user_data)
 
-    weight_display = format_weight(weight, unit)
-
-    result_text = (
-        f"🎣 Удочка клюнула — тебе попалась рыба <b>{fish_name}</b>, "
-        f"вес: <code>{weight_display}</code>, "
-        f"цена: <code>{format_number(fish_price)}$</code>. "
-        f"Энергии осталось: <code>{user_data['energy']}/{user_data['max_energy']}</code>"
-    )
-
-    bot.reply_to(message, result_text, parse_mode="HTML")
+    bot.reply_to(message, "🎣 Твоя удочка износилась и сломалась.", parse_mode="HTML")
+    return
 
 # ================== 🎣 ВОССТАНОВЛЕНИЕ ЭНЕРГИИ ЗА ЗВЁЗДЫ ==================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_recover_energy_"))
