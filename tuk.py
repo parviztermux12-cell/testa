@@ -2030,14 +2030,12 @@ def can_fish(user_id):
     # Регенерируем энергию
     user_data = regenerate_fishing_energy(user_id)
     
-    # Проверяем наличие удочки
+    # Проверяем наличие удочки по прочности
     if user_data["rod_durability"] <= 0:
-        # Если удочка сломана и это деревянная, удаляем её полностью
-        if user_data["rod_id"] == 1:
-            # Деревянная удочка сломалась - она исчезает
-            user_data["rod_id"] = 0  # 0 означает "нет удочки"
-            user_data["rod_durability"] = 0
-            update_fishing_user(user_id, user_data)
+        # Удочка сломалась - удаляем её полностью (неважно какая)
+        user_data["rod_id"] = 0
+        user_data["rod_durability"] = 0
+        update_fishing_user(user_id, user_data)
         return False, "🍀 Твоя удочка сломалась, купи другую."
     
     # Проверяем наличие удочки (rod_id > 0)
@@ -2100,7 +2098,7 @@ def check_fishing_button_owner(call, user_id):
         return False
     return True
     
-    # ================== 🎣 КОМАНДА: РЫБАЛКА ==================
+# ================== 🎣 КОМАНДА: РЫБАЛКА ==================
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["рыбалка", "рыбачить", "ловить рыбу"])
 def fishing_command(message):
     user_id = message.from_user.id
@@ -2113,7 +2111,7 @@ def fishing_command(message):
         if "восстановить энергию за 2⭐" in result_data:
             # Предлагаем восстановить энергию за звёзды
             kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton(" Восстановить энергию", callback_data=f"fishing_recover_energy_{user_id}"))
+            kb.add(InlineKeyboardButton("⚡ Восстановить энергию", callback_data=f"fishing_recover_energy_{user_id}"))
             bot.reply_to(message, result_data, parse_mode="HTML", reply_markup=kb)
         else:
             bot.reply_to(message, result_data, parse_mode="HTML")
@@ -2125,17 +2123,9 @@ def fishing_command(message):
     rod_break = check_rod_break(user_id, user_data["rod_id"])
     
     if rod_break:
-        # Удочка сломалась
-        if user_data["rod_id"] == 1:
-            # Деревянная удочка ломается навсегда
-            user_data["rod_id"] = 0
-            user_data["rod_durability"] = 0
-        else:
-            # Другие удочки просто уменьшают прочность
-            user_data["rod_durability"] -= random.randint(5, 15)
-            if user_data["rod_durability"] < 0:
-                user_data["rod_durability"] = 0
-        
+        # Удочка сломалась - полностью удаляем её (неважно какая)
+        user_data["rod_id"] = 0
+        user_data["rod_durability"] = 0
         update_fishing_user(user_id, user_data)
         
         bot.reply_to(message, "🍀 Твоя удочка сломалась, купи другую.", parse_mode="HTML")
