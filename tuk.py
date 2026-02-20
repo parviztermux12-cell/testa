@@ -2123,9 +2123,14 @@ def fishing_command(message):
     can_fish_result, result_data = can_fish(user_id)
 
     if not can_fish_result:
-        if "восстановить энергию за 2⭐" in result_data:
+        if "2⭐" in result_data:
             kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("⚡ Восстановить энергию", callback_data=f"fishing_recover_energy_{user_id}"))
+            kb.add(
+                InlineKeyboardButton(
+                    "⚡ Восстановить энергию",
+                    callback_data=f"fishing_recover_energy_{user_id}"
+                )
+            )
             bot.reply_to(message, result_data, parse_mode="HTML", reply_markup=kb)
         else:
             bot.reply_to(message, result_data, parse_mode="HTML")
