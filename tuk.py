@@ -2121,18 +2121,17 @@ def fishing_command(message):
     user_data = result_data
 
     # ===== ИЗНОС БЕЗ РАНДОМА =====
+    # Минус 1 прочность за каждую рыбалку
+    user_data["rod_durability"] -= 1
 
-# Минус 1 прочность за каждую рыбалку
-user_data["rod_durability"] -= 1
+    # Если удочка сломалась
+    if user_data["rod_durability"] <= 0:
+        user_data["rod_id"] = 0
+        user_data["rod_durability"] = 0
+        update_fishing_user(user_id, user_data)
 
-# Если удочка сломалась
-if user_data["rod_durability"] <= 0:
-    user_data["rod_id"] = 0
-    user_data["rod_durability"] = 0
-    update_fishing_user(user_id, user_data)
-
-    bot.reply_to(message, "🎣 Твоя удочка износилась и сломалась.", parse_mode="HTML")
-    return
+        bot.reply_to(message, "🎣 Твоя удочка износилась и сломалась.", parse_mode="HTML")
+        return
 
 # ================== 🎣 ВОССТАНОВЛЕНИЕ ЭНЕРГИИ ЗА ЗВЁЗДЫ ==================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_recover_energy_"))
