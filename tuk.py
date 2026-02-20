@@ -2094,7 +2094,11 @@ def get_random_fish(rod_id):
     
     return random.choice(weighted_fish)
 
-
+def check_fishing_button_owner(call, user_id):
+    if call.from_user.id != user_id:
+        bot.answer_callback_query(call.id, "🎣 Это не твоя кнопка!", show_alert=True)
+        return False
+    return True
 
 # ================== 🎣 КОМАНДА: РЫБАЛКА ==================
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["рыбалка", "рыбачить", "ловить рыбу"])
