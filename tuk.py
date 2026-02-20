@@ -2100,6 +2100,19 @@ def check_fishing_button_owner(call, user_id):
         return False
     return True
 
+def format_weight(weight, unit):
+    """Форматирует вес рыбы"""
+    if unit == "тонн":
+        return f"{weight:.3f} т"
+    elif weight >= 1000:
+        return f"{weight/1000:.3f} т"
+    elif weight >= 1:
+        return f"{weight:.3f} кг"
+    elif weight >= 0.001:
+        return f"{weight*1000:.1f} г"
+    else:
+        return f"{weight*1000000:.0f} мг"
+        
 # ================== 🎣 КОМАНДА: РЫБАЛКА ==================
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["рыбалка", "рыбачить", "ловить рыбу"])
 def fishing_command(message):
