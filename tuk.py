@@ -2121,10 +2121,8 @@ def fishing_command(message):
     user_data = result_data
 
     # ===== ИЗНОС БЕЗ РАНДОМА =====
-    # Минус 1 прочность за каждую рыбалку
     user_data["rod_durability"] -= 1
 
-    # Если удочка сломалась
     if user_data["rod_durability"] <= 0:
         user_data["rod_id"] = 0
         user_data["rod_durability"] = 0
@@ -2132,6 +2130,49 @@ def fishing_command(message):
 
         bot.reply_to(message, "🎣 Твоя удочка износилась и сломалась.", parse_mode="HTML")
         return
+
+    # 20% шанс что ничего не клюнет
+    if random.random() < 0.2:
+        user_data["energy"] -= 1
+        user_data["last_fishing_time"] = datetime.now().isoformat()
+        update_fishing_user(user_id, user_data)
+
+        bot.reply_to(message, "🎏 На удочку ничего не клюнуло, попробуй ещё раз.", parse_mode="HTML")
+        return
+
+    # Получаем рыбу
+    fish_name = get_random_fish(user_data["rod_id"])
+    fish_data = FISH_DATA[fish_name]
+
+    weight = random.uniform(fish_data["min_weight"], fish_data["max_weight"])
+    unit = fish_data["unit"]
+    price_per_kg = fish_data["price"]
+
+    if unit == "тонн":
+        fish_price = int(price_per_kg * 1000 * weight)
+    else:
+        fish_price = int(price_per_kg * weight)
+
+    add_fish_to_inventory(user_id, fish_name, fish_price, 1)
+
+    # Обновляем данные
+    user_data["energy"] -= 1
+    user_data["total_fish_caught"] += 1
+    user_data["last_fishing_time"] = datetime.now().isoformat()
+
+    update_fishing_user(user_id, user_data)
+
+    weight_display = format_weight(weight, unit)
+
+    result_text = (
+        f"{mention}, 🎣 тебе попалась рыба <b>{fish_name}</b>\n"
+        f"⚖ Вес: <code>{weight_display}</code>\n"
+        f"💰 Цена: <code>{format_number(fish_price)}$</code>\n"
+        f"⚡ Энергии осталось: <code>{user_data['energy']}/{user_data['max_energy']}</code>\n"
+        f"🔧 Прочность удочки: <code>{user_data['rod_durability']}</code>"
+    )
+
+    bot.reply_to(message, result_text, parse_mode="HTML")
 
 # ================== 🎣 ВОССТАНОВЛЕНИЕ ЭНЕРГИИ ЗА ЗВЁЗДЫ ==================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("fishing_recover_energy_"))
