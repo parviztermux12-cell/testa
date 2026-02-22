@@ -1317,22 +1317,10 @@ GIFTS_DATA = {
         "emoji": "❤️",
         "base_price": 50  # Базовая цена в звездах
     },
-    "bear_new": {
-        "id": "5956217000635139069",
-        "name": "Мишка (Новый Год)",
-        "emoji": "🧸",
-        "base_price": 50
-    },
     "tree": {
         "id": "5922558454332916696",
         "name": "Ёлочка",
         "emoji": "🎄",
-        "base_price": 50
-    },
-    "bear_valentine": {
-        "id": "5800655655995968830",
-        "name": "Мишка (14 Февраля)",
-        "emoji": "🧸",
         "base_price": 50
     }
 }
@@ -1480,7 +1468,7 @@ def gift_select_text_callback(call):
             ))
 
         # Кнопка отмены
-        kb.add(InlineKeyboardButton("❌ Отменить", callback_data=f"gift_cancel_{owner_id}"))
+        kb.add(InlineKeyboardButton("Отменить", callback_data=f"gift_cancel_{owner_id}"))
 
         bot.edit_message_text(
             text,
@@ -1544,8 +1532,8 @@ def gift_text_callback(call):
         )
 
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(f"💳 Оплатить {total_price}⭐", callback_data=f"gift_pay_{owner_id}"))
-        kb.add(InlineKeyboardButton("❌ Отменить", callback_data=f"gift_cancel_{owner_id}"))
+        kb.add(InlineKeyboardButton(f" Оплатить {total_price}⭐", callback_data=f"gift_pay_{owner_id}"))
+        kb.add(InlineKeyboardButton(" Отменить", callback_data=f"gift_cancel_{owner_id}"))
 
         bot.edit_message_text(
             text,
