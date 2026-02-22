@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger("LasVenturas By parviz")
 
 # ================== КОНСТАНТЫ И ОГРАНИЧЕНИЯ ==================
-TOKEN = "8259575977:AAHwfVOSF058L-bMan1l6NanOZUNsPrw7D0"
+TOKEN = "8293824305:AAH-Z8pb3eDArf98C3_IUWHBzSTRUfsI338"
 WELCOME_IMAGE_URL = "https://i.supaimg.com/2939d8ad-5c5a-4bea-a182-6c3e8bbc833d.jpg"
 CASINO_IMAGE_URL = "https://avatars.mds.yandex.net/i?id=c651fbed170eb7128e00ff84ca1c0bf543c74de2-10332115-images-thumbs&n=13"
 BLACKJACK_IMAGE_URL = "https://avatars.mds.yandex.net/i?id=dc64180881834f3c5a302bda16d65de46956d887-5355514-images-thumbs&n=13&shower=-1&blur=-1"
@@ -11159,6 +11159,7 @@ HELP_CONTENT = {
 [👝] <b>купить кейс [номер]</b> — купить кейс за звёзды
 [👝] <b>мои кейсы</b> — ваш купленный кейс
 [👝] <b>открыть кейс</b> — открыть свой кейс если он есть
+[🍀] <b>купить подарок</b> — купить подарок себе от имени бота
 """,
 
     # ----- ИГРЫ (СТРАНИЦА 1) - ТОЛЬКО КОМАНДЫ, БЕЗ ОПИСАНИЙ -----
