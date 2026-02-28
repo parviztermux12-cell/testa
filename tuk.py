@@ -1874,27 +1874,24 @@ def admin_throw_pumpkin(message):
         # Игнорируем, ничего не отвечаем
         return
     
-    # Загружаем список чатов
-    chats = load_pumpkin_chats()
+    # ID чата, куда нужно кинуть тыкву
+    target_chat_id = -1003719928505
     
-    if not chats:
-        bot.reply_to(message, "❌ Нет чатов для рассылки тыкв!")
-        return
-    
-    # Отправляем тыкву во все чаты
-    sent_count = 0
-    for chat_id in chats:
-        if send_pumpkin_to_chat(chat_id):
-            sent_count += 1
-        time.sleep(0.5)  # Небольшая задержка чтобы не флудить
-    
-    bot.reply_to(
-        message,
-        f"✅ Тыквы отправлены в <b>{sent_count}</b> чатов из <b>{len(chats)}</b>",
-        parse_mode="HTML"
-    )
-    
-    logger.info(f"Админ {user_id} отправил тыквы в {sent_count} чатов")
+    # Отправляем тыкву в указанный чат
+    if send_pumpkin_to_chat(target_chat_id):
+        bot.reply_to(
+            message,
+            f"✅ Тыква отправлена в чат <code>{target_chat_id}</code>",
+            parse_mode="HTML"
+        )
+        logger.info(f"Админ {user_id} отправил тыкву в чат {target_chat_id}")
+    else:
+        bot.reply_to(
+            message,
+            f"❌ Не удалось отправить тыкву в чат <code>{target_chat_id}</code>\n"
+            f"Возможно, бот не состоит в этом чате или нет прав.",
+            parse_mode="HTML"
+        )
 
 # ---------- ЗАПУСК ПЛАНИРОВЩИКА ----------
 def start_pumpkin_scheduler():
