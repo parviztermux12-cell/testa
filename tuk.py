@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger("LasVenturas By parviz")
 
 # ================== КОНСТАНТЫ И ОГРАНИЧЕНИЯ ==================
-TOKEN = "8293824305:AAH-Z8pb3eDArf98C3_IUWHBzSTRUfsI338"
+TOKEN = "8259575977:AAHwfVOSF058L-bMan1l6NanOZUNsPrw7D0"
 WELCOME_IMAGE_URL = "https://i.supaimg.com/2939d8ad-5c5a-4bea-a182-6c3e8bbc833d.jpg"
 CASINO_IMAGE_URL = "https://avatars.mds.yandex.net/i?id=c651fbed170eb7128e00ff84ca1c0bf543c74de2-10332115-images-thumbs&n=13"
 BLACKJACK_IMAGE_URL = "https://avatars.mds.yandex.net/i?id=dc64180881834f3c5a302bda16d65de46956d887-5355514-images-thumbs&n=13&shower=-1&blur=-1"
@@ -1307,6 +1307,608 @@ def admin_referrals_top(message):
             text += f"{i}. <a href='tg://user?id={uid}'>{name}</a> — <b>{count}</b> реф. ({format_number(count*REFERRAL_BONUS)}$)\n"
 
     bot.send_message(message.chat.id, text, parse_mode="HTML")
+    
+    # ================== 💣 ИГРА "ОБЕЗВРЕДЬ БОМБУ" ==================
+
+BOMB_COOLDOWN = 120  # 2 минуты
+bomb_sessions = {}  # user_id -> данные игры
+bomb_last_play = {}  # user_id -> timestamp
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("бомба"))
+def bomb_game(message):
+    user_id = message.from_user.id
+    args = message.text.split()
+
+    if len(args) < 2:
+        bot.send_message(message.chat.id, "Использование: бомба <ставка>")
+        return
+
+    try:
+        bet = int(args[1])
+    except:
+        bot.send_message(message.chat.id, "❌ Ставка должна быть числом.")
+        return
+
+    if bet <= 0:
+        bot.send_message(message.chat.id, "❌ Ставка должна быть больше 0.")
+        return
+
+    user_data = get_user_data(user_id)
+
+    if user_data["balance"] < bet:
+        bot.send_message(message.chat.id, "❌ Недостаточно средств.")
+        return
+
+    # Кулдаун
+    now = time.time()
+    last_play = bomb_last_play.get(user_id, 0)
+    if now - last_play < BOMB_COOLDOWN:
+        remaining = int(BOMB_COOLDOWN - (now - last_play))
+        bot.send_message(message.chat.id, f"⏳ Подожди {remaining} сек перед новой бомбой.")
+        return
+
+    # Списание ставки
+    user_data["balance"] -= bet
+    save_casino_data()
+
+    # Определяем случайный правильный провод
+    wires = ["red", "blue", "green"]
+    good_wire = random.choice(wires)
+
+    bomb_sessions[user_id] = {
+        "bet": bet,
+        "good_wire": good_wire,
+        "chat_id": message.chat.id,
+        "message_id": None
+    }
+
+    bomb_last_play[user_id] = now
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("🔴 Красный", callback_data=f"bomb_red_{user_id}"),
+        InlineKeyboardButton("🔵 Синий", callback_data=f"bomb_blue_{user_id}"),
+        InlineKeyboardButton("🟢 Зелёный", callback_data=f"bomb_green_{user_id}")
+    )
+
+    sent = bot.send_message(
+        message.chat.id,
+        f"💣 БОМБА АКТИВИРОВАНА!\n\n"
+        f"💰 Ставка: {bet}$\n"
+        f"Выбери провод для обезвреживания 👇",
+        reply_markup=kb
+    )
+
+    bomb_sessions[user_id]["message_id"] = sent.message_id
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("bomb_"))
+def bomb_callback(call):
+    parts = call.data.split("_")
+    chosen_wire = parts[1]
+    owner_id = int(parts[2])
+
+    if call.from_user.id != owner_id:
+        bot.answer_callback_query(call.id, "❌ Это не твоя бомба!", show_alert=True)
+        return
+
+    if owner_id not in bomb_sessions:
+        bot.answer_callback_query(call.id, "❌ Игра не найдена.")
+        return
+
+    session = bomb_sessions.pop(owner_id)
+    bet = session["bet"]
+    good_wire = session["good_wire"]
+    chat_id = session["chat_id"]
+    message_id = session["message_id"]
+
+    user_data = get_user_data(owner_id)
+
+    # Победа
+    if chosen_wire == good_wire:
+        win_amount = int(bet * 1.8)
+        user_data["balance"] += win_amount
+        result_text = f"🎉 УСПЕХ!\n\nТы правильно обезвредил бомбу!\n\n💰 Выигрыш: {win_amount}$"
+
+    else:
+        if chosen_wire == "red":
+            lose_amount = int(bet * 0.5)
+            user_data["balance"] += lose_amount
+            result_text = f"💥 ЧАСТИЧНЫЙ ВЗРЫВ!\n\nТы потерял половину.\n\n💸 Вернулось: {lose_amount}$"
+        else:
+            result_text = f"💀 БОМБА ВЗОРВАЛАСЬ!\n\nТы потерял всю ставку.\n\n💸 Потеря: {bet}$"
+
+    save_casino_data()
+
+    bot.edit_message_text(
+        result_text,
+        chat_id,
+        message_id
+    )
+
+    bot.answer_callback_query(call.id)
+    
+    # ================== 🎃 ИВЕНТ "ОХОТА НА ТЫКВУ" ==================
+import random
+import threading
+import time
+import sqlite3
+from datetime import datetime, timedelta
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# Константы
+PUMPKIN_IMAGE_URL = "https://avatars.mds.yandex.net/i?id=7e3e581c9abba980c9b1be8b413bc275_l-10022398-images-thumbs&n=33&w=720&h=720"
+PUMPKIN_DB = "tikvi.db"
+PUMPKIN_MIN_REWARD = 30000
+PUMPKIN_MAX_REWARD = 2000000
+
+# Глобальная переменная для активных событий в чатах
+active_pumpkin_events = {}
+
+# ---------- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ----------
+def init_pumpkin_db():
+    """Создает таблицы для тыкв в tikvi.db"""
+    conn = sqlite3.connect(PUMPKIN_DB)
+    c = conn.cursor()
+    
+    # Таблица статистики пользователей (сколько тыкв собрал и заработал)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS pumpkin_stats (
+            user_id INTEGER PRIMARY KEY,
+            total_harvested INTEGER DEFAULT 0,
+            total_earned INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Таблица чатов, где был бот (для автоматической рассылки)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS pumpkin_chats (
+            chat_id INTEGER PRIMARY KEY,
+            added_at TEXT
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+    logger.info("✅ База данных tikvi.db для ивента 'Охота на тыкву' инициализирована")
+
+init_pumpkin_db()
+
+# ---------- РАБОТА С ЧАТАМИ ДЛЯ РАССЫЛКИ ----------
+def load_pumpkin_chats():
+    """Загружает список чатов для рассылки тыкв"""
+    try:
+        conn = sqlite3.connect(PUMPKIN_DB)
+        c = conn.cursor()
+        c.execute("SELECT chat_id FROM pumpkin_chats")
+        rows = c.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
+    except Exception as e:
+        logger.error(f"Ошибка загрузки чатов для тыкв: {e}")
+        return []
+
+def add_pumpkin_chat(chat_id):
+    """Добавляет чат в список для рассылки"""
+    try:
+        conn = sqlite3.connect(PUMPKIN_DB)
+        c = conn.cursor()
+        c.execute(
+            "INSERT OR IGNORE INTO pumpkin_chats (chat_id, added_at) VALUES (?, ?)",
+            (chat_id, datetime.now().isoformat())
+        )
+        conn.commit()
+        conn.close()
+        logger.info(f"✅ Чат {chat_id} добавлен в рассылку тыкв")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка добавления чата {chat_id} в рассылку тыкв: {e}")
+        return False
+
+# ---------- РАБОТА СО СТАТИСТИКОЙ ПОЛЬЗОВАТЕЛЯ ----------
+def get_pumpkin_stats(user_id):
+    """Получает статистику тыкв пользователя"""
+    conn = sqlite3.connect(PUMPKIN_DB)
+    c = conn.cursor()
+    c.execute("SELECT total_harvested, total_earned FROM pumpkin_stats WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if row:
+        return {
+            "total_harvested": row[0],
+            "total_earned": row[1]
+        }
+    else:
+        return {
+            "total_harvested": 0,
+            "total_earned": 0
+        }
+
+def update_pumpkin_stats(user_id, harvested_count=0, earned_amount=0):
+    """Обновляет статистику тыкв пользователя"""
+    conn = sqlite3.connect(PUMPKIN_DB)
+    c = conn.cursor()
+    
+    # Проверяем, есть ли уже запись
+    c.execute("SELECT 1 FROM pumpkin_stats WHERE user_id = ?", (user_id,))
+    exists = c.fetchone()
+    
+    if exists:
+        c.execute("""
+            UPDATE pumpkin_stats 
+            SET total_harvested = total_harvested + ?, 
+                total_earned = total_earned + ? 
+            WHERE user_id = ?
+        """, (harvested_count, earned_amount, user_id))
+    else:
+        c.execute("""
+            INSERT INTO pumpkin_stats (user_id, total_harvested, total_earned) 
+            VALUES (?, ?, ?)
+        """, (user_id, harvested_count, earned_amount))
+    
+    conn.commit()
+    conn.close()
+
+def calculate_pumpkin_value():
+    """Генерирует случайную стоимость тыквы"""
+    return random.randint(PUMPKIN_MIN_REWARD, PUMPKIN_MAX_REWARD)
+
+def calculate_total_value(quantity):
+    """Рассчитывает общую стоимость тыкв"""
+    return quantity * calculate_pumpkin_value() // 2  # Примерная средняя стоимость
+
+# ---------- ФУНКЦИЯ ДЛЯ ОТПРАВКИ ТЫКВЫ В ЧАТ ----------
+def send_pumpkin_to_chat(chat_id):
+    """Отправляет сообщение о тыкве в конкретный чат"""
+    try:
+        # Проверяем, нет ли уже активного события в этом чате
+        if chat_id in active_pumpkin_events:
+            return False
+        
+        # Генерируем уникальный ID для события
+        event_id = f"pumpkin_{chat_id}_{int(time.time())}"
+        reward = calculate_pumpkin_value()
+        
+        # Сохраняем информацию о событии
+        active_pumpkin_events[chat_id] = {
+            "event_id": event_id,
+            "reward": reward,
+            "active": True,
+            "message_id": None
+        }
+        
+        # Создаем клавиатуру с кнопкой
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("Сорвать тыкву", callback_data=f"harvest_pumpkin_{chat_id}_{event_id}"))
+        
+        # Отправляем сообщение
+        msg = bot.send_photo(
+            chat_id,
+            PUMPKIN_IMAGE_URL,
+            caption="🎃 Успейте сорвать тыкву пока не сорвал кто-то другой",
+            reply_markup=kb
+        )
+        
+        # Сохраняем ID сообщения
+        active_pumpkin_events[chat_id]["message_id"] = msg.message_id
+        
+        logger.info(f"🎃 Тыква отправлена в чат {chat_id} (награда: {reward}$)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ошибка отправки тыквы в чат {chat_id}: {e}")
+        if chat_id in active_pumpkin_events:
+            del active_pumpkin_events[chat_id]
+        return False
+
+# ---------- АВТОМАТИЧЕСКАЯ РАССЫЛКА ТЫКВ ----------
+def pumpkin_scheduler():
+    """Автоматически отправляет тыквы в чаты с random интервалом"""
+    while True:
+        try:
+            # Ждем от 30 минут до 2 часов
+            delay = random.randint(1800, 7200)  # 30-120 минут в секундах
+            time.sleep(delay)
+            
+            # Загружаем список чатов
+            chats = load_pumpkin_chats()
+            if not chats:
+                logger.info("🎃 Нет чатов для рассылки тыкв")
+                continue
+            
+            # Выбираем случайный чат
+            chat_id = random.choice(chats)
+            
+            # Отправляем тыкву
+            send_pumpkin_to_chat(chat_id)
+            
+        except Exception as e:
+            logger.error(f"Ошибка в планировщике тыкв: {e}")
+            time.sleep(60)
+
+# ---------- ОБРАБОТЧИК КНОПКИ "СОРВАТЬ ТЫКВУ" ----------
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("harvest_pumpkin_"))
+def harvest_pumpkin_callback(call):
+    try:
+        # Разбираем callback_data
+        parts = call.data.split("_")
+        if len(parts) < 4:
+            bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+            return
+            
+        chat_id = int(parts[2])
+        event_id = parts[3]
+        
+        # Проверяем, активно ли событие
+        if chat_id not in active_pumpkin_events:
+            bot.answer_callback_query(call.id, "❌ Тыква уже сорвана!", show_alert=True)
+            return
+        
+        event = active_pumpkin_events[chat_id]
+        if not event["active"] or event["event_id"] != event_id:
+            bot.answer_callback_query(call.id, "❌ Тыква уже сорвана!", show_alert=True)
+            return
+        
+        # Помечаем событие как неактивное
+        event["active"] = False
+        
+        # Получаем информацию о пользователе
+        user_id = call.from_user.id
+        user_name = call.from_user.first_name
+        mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
+        reward = event["reward"]
+        
+        # Обновляем статистику пользователя
+        update_pumpkin_stats(user_id, 1, reward)
+        
+        # Удаляем сообщение с кнопкой
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except Exception as e:
+            logger.error(f"Не удалось удалить сообщение с тыквой: {e}")
+        
+        # Отправляем новое сообщение с результатом
+        result_text = (
+            f"{mention}, поздравляю ты первее всех в этом чате сорвал тыкву себе 🎃\n\n"
+            f"💰 Награда: <code>{reward:,}$</code>\n\n"
+            f"📊 Узнать свою статистику можно введя команду <code>мои тыквы</code>"
+        )
+        
+        bot.send_message(chat_id, result_text, parse_mode="HTML")
+        
+        # Удаляем событие из активных
+        del active_pumpkin_events[chat_id]
+        
+        bot.answer_callback_query(call.id, f"✅ +{reward:,}$")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при срыве тыквы: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+# ---------- КОМАНДА "МОИ ТЫКВЫ" ----------
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "мои тыквы")
+def my_pumpkins_command(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
+    
+    # Получаем статистику
+    stats = get_pumpkin_stats(user_id)
+    
+    # Рассчитываем примерную стоимость при продаже
+    avg_value = (PUMPKIN_MIN_REWARD + PUMPKIN_MAX_REWARD) // 2
+    sell_value = stats["total_harvested"] * avg_value
+    
+    text = (
+        f"🎃 Твоя статистика в сборе тыкв:\n\n"
+        f"🍹 Сорвано всего: <code>{stats['total_harvested']}</code>\n"
+        f"🍀 После продажи можно получить: <code>{sell_value:,}$</code>"
+    )
+    
+    # Создаем клавиатуру с кнопкой продажи
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Продать тыквы", callback_data=f"sell_pumpkins_{user_id}"))
+    
+    bot.reply_to(message, text, parse_mode="HTML", reply_markup=kb)
+
+# ---------- ПРОДАЖА ТЫКВ (ПОДТВЕРЖДЕНИЕ) ----------
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("sell_pumpkins_"))
+def sell_pumpkins_confirm(call):
+    try:
+        owner_id = int(call.data.split("_")[2])
+        
+        # Проверка владельца
+        if call.from_user.id != owner_id:
+            bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
+            return
+        
+        # Получаем статистику
+        stats = get_pumpkin_stats(owner_id)
+        
+        if stats["total_harvested"] == 0:
+            bot.answer_callback_query(call.id, "❌ У тебя нет тыкв для продажи!", show_alert=True)
+            return
+        
+        # Рассчитываем стоимость (случайная цена за каждую тыкву)
+        total_value = 0
+        for _ in range(stats["total_harvested"]):
+            total_value += calculate_pumpkin_value()
+        
+        mention = f'<a href="tg://user?id={owner_id}">{call.from_user.first_name}</a>'
+        
+        text = (
+            f"{mention}, вы точно хотите продать все свои тыквы за <code>{total_value:,}$</code>?"
+        )
+        
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            InlineKeyboardButton("Да", callback_data=f"confirm_sell_pumpkins_{owner_id}_{total_value}"),
+            InlineKeyboardButton("Нет", callback_data=f"cancel_sell_pumpkins_{owner_id}")
+        )
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при подтверждении продажи тыкв: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+# ---------- ПОДТВЕРЖДЕНИЕ ПРОДАЖИ ----------
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("confirm_sell_pumpkins_"))
+def confirm_sell_pumpkins(call):
+    try:
+        parts = call.data.split("_")
+        owner_id = int(parts[3])
+        total_value = int(parts[4])
+        
+        # Проверка владельца
+        if call.from_user.id != owner_id:
+            bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
+            return
+        
+        # Получаем статистику
+        stats = get_pumpkin_stats(owner_id)
+        
+        if stats["total_harvested"] == 0:
+            bot.answer_callback_query(call.id, "❌ У тебя нет тыкв для продажи!", show_alert=True)
+            return
+        
+        # Начисляем деньги на баланс
+        user_data = get_user_data(owner_id)
+        user_data["balance"] += total_value
+        save_casino_data()
+        
+        # Обновляем статистику (обнуляем тыквы, но сохраняем заработанное)
+        conn = sqlite3.connect(PUMPKIN_DB)
+        c = conn.cursor()
+        c.execute("UPDATE pumpkin_stats SET total_harvested = 0 WHERE user_id = ?", (owner_id,))
+        conn.commit()
+        conn.close()
+        
+        mention = f'<a href="tg://user?id={owner_id}">{call.from_user.first_name}</a>'
+        
+        text = (
+            f"{mention}, вы успешно продали все тыквы за <code>{total_value:,}$</code>.\n"
+            f"Деньги зачислены на баланс 💰"
+        )
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML"
+        )
+        
+        bot.answer_callback_query(call.id, f"✅ +{total_value:,}$")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при продаже тыкв: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+# ---------- ОТМЕНА ПРОДАЖИ ----------
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("cancel_sell_pumpkins_"))
+def cancel_sell_pumpkins(call):
+    try:
+        owner_id = int(call.data.split("_")[3])
+        
+        # Проверка владельца
+        if call.from_user.id != owner_id:
+            bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
+            return
+        
+        # Возвращаемся к статистике
+        mention = f'<a href="tg://user?id={owner_id}">{call.from_user.first_name}</a>'
+        stats = get_pumpkin_stats(owner_id)
+        
+        avg_value = (PUMPKIN_MIN_REWARD + PUMPKIN_MAX_REWARD) // 2
+        sell_value = stats["total_harvested"] * avg_value
+        
+        text = (
+            f"🎃 Твоя статистика в сборе тыкв:\n\n"
+            f"🍹 Сорвано всего: <code>{stats['total_harvested']}</code>\n"
+            f"🍀 После продажи можно получить: <code>{sell_value:,}$</code>"
+        )
+        
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("Продать тыквы", callback_data=f"sell_pumpkins_{owner_id}"))
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        
+        bot.answer_callback_query(call.id, "❌ Продажа отменена")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при отмене продажи тыкв: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+# ---------- АВТОМАТИЧЕСКОЕ ДОБАВЛЕНИЕ ЧАТОВ ----------
+# Перехватываем команду "мои тыквы" для автоматического добавления чата
+original_my_pumpkins = my_pumpkins_command
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "мои тыквы")
+def enhanced_my_pumpkins(message):
+    # Добавляем чат в рассылку
+    add_pumpkin_chat(message.chat.id)
+    # Вызываем оригинальную функцию
+    original_my_pumpkins(message)
+
+# ---------- АДМИН КОМАНДА "КИНУТЬ ТЫКВУ" ----------
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "кинуть тыкву")
+def admin_throw_pumpkin(message):
+    user_id = message.from_user.id
+    
+    # Проверка на админа
+    if user_id not in ADMIN_IDS:
+        # Игнорируем, ничего не отвечаем
+        return
+    
+    # Загружаем список чатов
+    chats = load_pumpkin_chats()
+    
+    if not chats:
+        bot.reply_to(message, "❌ Нет чатов для рассылки тыкв!")
+        return
+    
+    # Отправляем тыкву во все чаты
+    sent_count = 0
+    for chat_id in chats:
+        if send_pumpkin_to_chat(chat_id):
+            sent_count += 1
+        time.sleep(0.5)  # Небольшая задержка чтобы не флудить
+    
+    bot.reply_to(
+        message,
+        f"✅ Тыквы отправлены в <b>{sent_count}</b> чатов из <b>{len(chats)}</b>",
+        parse_mode="HTML"
+    )
+    
+    logger.info(f"Админ {user_id} отправил тыквы в {sent_count} чатов")
+
+# ---------- ЗАПУСК ПЛАНИРОВЩИКА ----------
+def start_pumpkin_scheduler():
+    """Запускает планировщик рассылки тыкв"""
+    scheduler_thread = threading.Thread(target=pumpkin_scheduler, daemon=True)
+    scheduler_thread.start()
+    logger.info("🎃 Планировщик рассылки тыкв запущен")
+
+# Запускаем планировщик
+start_pumpkin_scheduler()
+
+print("✅ Ивент 'Охота на тыкву' успешно добавлен! (База данных: tikvi.db)")
+print(f"   • Награда: от {PUMPKIN_MIN_REWARD:,}$ до {PUMPKIN_MAX_REWARD:,}$")
+print("   • Команды: 'мои тыквы', 'кинуть тыкву' (админ)")
     
 # ================== 🎁 НОВАЯ СИСТЕМА ПОКУПКИ ПОДАРКОВ (ТОЛЬКО СЕБЕ) ==================
 # ID подарков (Telegram Premium Gifts) и их настройки
@@ -6426,9 +7028,9 @@ def full_backup_zip(message):
 
     backed_up_files = []
 
-    # Ищем ВСЕ .db и .json
+    # Ищем ВСЕ .db, .json и .txt файлы
     for file in os.listdir(workdir):
-        if file.endswith(".db") or file.endswith(".json"):
+        if file.endswith((".db", ".json", ".txt")):
             try:
                 shutil.copy(file, os.path.join(temp_dir, file))
                 backed_up_files.append(file)
@@ -6460,7 +7062,11 @@ def full_backup_zip(message):
                 "🗂 <b>Полный бэкап бота</b>\n\n"
                 f"📦 Файлов: <code>{len(backed_up_files)}</code>\n"
                 "📁 Формат: <code>.zip</code>\n"
-                "🛡 База безопасна"
+                "🛡 База безопасна\n\n"
+                f"<b>Типы файлов:</b>\n"
+                f"• Базы данных: <code>.db</code>\n"
+                f"• Конфиги: <code>.json</code>\n"
+                f"• Логи: <code>.txt</code>"
             ),
             parse_mode="HTML"
         )
@@ -7835,7 +8441,7 @@ def cmd_start(message):
     welcome_text = (
         f"Привет {mention}, я игровой чат бот, для того чтобы узнать обо мне по больше, "
         f"напиши команду /help или <code>помощь</code>. "
-        f"Если хочешь добавить меня в свой чат, <a href='{add_to_group_url}'>сюда</a> "
+        f"Если хочешь добавить меня в свой чат, <a href='{add_to_group_url}'>нажми сюда</a> "
     )
 
     # Создаем инлайн клавиатуру с кнопкой для показа списка групп
@@ -7904,7 +8510,7 @@ def back_to_start(call):
     welcome_text = (
         f"Привет {mention}, я игровой чат бот, для того чтобы узнать обо мне по больше, "
         f"напиши команду /help или <code>помощь</code>. "
-        f"Если хочешь добавить меня в свой чат, <a href='{add_to_group_url}'>сюда</a> "
+        f"Если хочешь добавить меня в свой чат, <a href='{add_to_group_url}'>нажми сюда</a> "
     )
 
     kb = InlineKeyboardMarkup()
@@ -9322,7 +9928,15 @@ def place_bet(message):
         bot.send_message(message.chat.id, "❌ Ошибка при размещении ставки!")
 
 
-# ================== ГО ==================
+import threading
+import uuid
+from datetime import datetime
+
+roulette_lock = threading.Lock()
+
+def generate_roulette_session_id():
+    """Генерирует уникальный ID для сессии рулетки."""
+    return str(uuid.uuid4())[:8]
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == 'го')
 def start_roulette(message):
@@ -9330,24 +9944,61 @@ def start_roulette(message):
         chat_id = str(message.chat.id)
         user_id = message.from_user.id
         mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-
-        roulette_data = load_roulette_bets()
-
-        if chat_id not in roulette_data or not roulette_data[chat_id]:
-            bot.send_message(chat_id, "❌ В чате нет активных ставок!", parse_mode="HTML")
-            return
-
+        
+        # ✅ Создаем session_id в самом начале, чтобы он был доступен везде
+        session_id = generate_roulette_session_id()
+        
+        with roulette_lock:
+            # 1. Загружаем ставки
+            try:
+                with open(ROULETTE_BETS_FILE, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if not content:  # Пустой файл
+                        roulette_data = {}
+                    else:
+                        roulette_data = json.loads(content)
+            except (FileNotFoundError, json.JSONDecodeError):
+                roulette_data = {}
+            
+            # 2. Проверяем наличие ставок в чате
+            if chat_id not in roulette_data or not roulette_data[chat_id]:
+                bot.send_message(chat_id, 
+                                 f"{mention}, в чате нет активных ставок!",
+                                 parse_mode="HTML")
+                return
+            
+            # 3. Сохраняем ставки в локальную переменную
+            chat_bets = roulette_data.pop(chat_id, None)
+            
+            # 4. Перезаписываем файл, удаляя обработанные ставки
+            try:
+                with open(ROULETTE_BETS_FILE, "w", encoding="utf-8") as f:
+                    json.dump(roulette_data, f, ensure_ascii=False, indent=4)
+            except Exception as e:
+                logger.error(f"Не удалось сохранить файл ставок: {e}")
+                # Если не удалось сохранить, возвращаем ставки обратно, чтобы не потерять
+                if chat_bets:
+                    if chat_id not in roulette_data:
+                        roulette_data[chat_id] = {}
+                    roulette_data[chat_id].update(chat_bets)
+                    with open(ROULETTE_BETS_FILE, "w", encoding="utf-8") as f:
+                        json.dump(roulette_data, f, ensure_ascii=False, indent=4)
+                bot.send_message(chat_id, "❌ Ошибка при обработке ставок. Попробуйте позже.")
+                return
+        
+        # ===== ВНЕ БЛОКИРОВКИ =====
+        # 5. Отправляем анимацию
         spin_msg = bot.send_animation(
             chat_id,
             ROULETTE_SPIN_GIF,
-            caption=f"🎲 {mention} запускает рулетку...",
+            caption=f"🎲 {mention} запускает рулетку...\nСессия: <code>{session_id}</code>",
             parse_mode="HTML"
         )
-
+        
         time.sleep(2)
-
-        # Генерация результата
-        if random.random() < 0.027:
+        
+        # 6. Генерируем результат
+        if random.random() < 0.027:  # 2.7% шанс на зеро
             result_number = 0
             result_color = 'з'
             color_emoji = "🟢"
@@ -9355,61 +10006,88 @@ def start_roulette(message):
             result_number = random.randint(1, 36)
             result_color = 'ч' if result_number % 2 == 0 else 'к'
             color_emoji = "⚫" if result_color == 'ч' else "🔴"
-
-        result_text = f"🎰 <b>РУЛЕТКА</b>\n🎲 Выпало: <b>{result_number}</b> {color_emoji}\n\n"
-
-        for player_id, bets in roulette_data[chat_id].items():
-            player_data = get_user_data(int(player_id))
-
-            for bet in bets:
-                win = 0
-                won = False
-
-                # ----- ЦВЕТ -----
-                if bet["type"] == "color":
-                    if bet["value"] == result_color:
-                        won = True
-                        win = bet["amount"] * (15 if result_color == 'з' else 2)
-
-                # ----- ЧИСЛО -----
-                elif bet["type"] == "single":
-                    if result_number in bet["value"]:
-                        won = True
-                        win = bet["amount"] * 2
-
-                # ----- ДИАПАЗОН -----
-                elif bet["type"] == "range":
-                    if bet["start"] <= result_number <= bet["end"]:
-                        won = True
-                        win = bet["amount"] * 2
-
-                if won:
-                    player_data["balance"] += win
-                    result_text += f"✅ {bet['mention']} выиграл {format_number(win)}$\n"
-                else:
-                    result_text += f"❌ {bet['mention']} проиграл\n"
-
-        save_casino_data()
-
-        del roulette_data[chat_id]
-        save_roulette_bets(roulette_data)
-
+        
+        result_text = f"🎰 <b>РУЛЕТКА</b> | Сессия: <code>{session_id}</code>\n"
+        result_text += f"🎲 Выпало: <b>{result_number}</b> {color_emoji}\n\n"
+        
+        # 7. Обрабатываем ставки
+        total_bets = 0
+        winners = 0
+        
+        for player_id, bets in chat_bets.items():
+            try:
+                player_data = get_user_data(int(player_id))
+                for bet in bets:
+                    total_bets += 1
+                    win = 0
+                    won = False
+                    
+                    # ЦВЕТ
+                    if bet["type"] == "color":
+                        if bet["value"] == result_color:
+                            won = True
+                            win = bet["amount"] * (15 if result_color == 'з' else 2)
+                    
+                    # ЧИСЛО
+                    elif bet["type"] == "single":
+                        if result_number in bet["value"]:
+                            won = True
+                            win = bet["amount"] * 36 if len(bet["value"]) == 1 else bet["amount"] * 2
+                    
+                    # ДИАПАЗОН
+                    elif bet["type"] == "range":
+                        if bet["start"] <= result_number <= bet["end"]:
+                            won = True
+                            win = bet["amount"] * (bet["end"] - bet["start"] + 1)
+                    
+                    if won:
+                        player_data["balance"] += win
+                        winners += 1
+                        result_text += f"✅ {bet['mention']} выиграл {format_number(win)}$\n"
+                    else:
+                        result_text += f"❌ {bet['mention']} проиграл {format_number(bet['amount'])}$\n"
+                        
+                save_casino_data()
+                
+            except Exception as e:
+                logger.error(f"Ошибка обработки ставки игрока {player_id}: {e}")
+                result_text += f"⚠️ Ошибка при обработке ставки игрока {player_id}\n"
+        
+        # 8. Удаляем анимацию
         try:
             bot.delete_message(chat_id, spin_msg.message_id)
         except:
             pass
-
+        
+        # 9. Добавляем статистику в результат
+        result_text += f"\n📊 <b>Итог:</b> Обработано ставок: {total_bets}, Победителей: {winners}"
+        
+        # 10. Отправляем результат
         if len(result_text) > 4000:
-            result_text = result_text[:4000]
-
+            result_text = result_text[:4000] + "..."
+        
         bot.send_message(chat_id, result_text, parse_mode="HTML")
-
-        with open(ROULETTE_RESULTS_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{result_number}|{result_color}\n")
-
+        
+        # 11. Логируем результат ✅
+        try:
+            with open(ROULETTE_RESULTS_FILE, "a", encoding="utf-8") as f:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"{timestamp}|{result_number}|{result_color}|{session_id}|{total_bets}|{winners}\n")
+                logger.info(f"✅ Результат рулетки записан в лог: {result_number} {result_color}, сессия {session_id}")
+        except Exception as e:
+            logger.error(f"❌ Не удалось записать результат рулетки в лог: {e}")
+            
     except Exception as e:
-        logger.error(f"Ошибка рулетки: {e}")
-        bot.send_message(message.chat.id, "❌ Ошибка при запуске рулетки!")
+        logger.error(f"❌ Критическая ошибка рулетки: {e}", exc_info=True)
+        
+        # ✅ Проверяем, существует ли session_id (на случай ошибки ДО его создания)
+        error_session_id = session_id if 'session_id' in locals() else "unknown"
+        
+        bot.send_message(message.chat.id, 
+                        f"❌ Критическая ошибка при запуске рулетки!\n"
+                        f"Сообщите администратору код: <code>{error_session_id}</code>\n"
+                        f"Ошибка: {str(e)}",
+                        parse_mode="HTML")
 
 # ================== КОМАНДА ЛОГИ РУЛЕТКИ ==================
 
@@ -9437,10 +10115,32 @@ def show_roulette_logs(message):
             log = log.strip()
             if "|" in log:
                 parts = log.split("|")
-                number = parts[0]
-                color = parts[1]
-                emoji = '🟢' if color == 'з' else ('🔴' if color == 'к' else '⚫')
-                text += f"{emoji} ({number})\n"
+                # ✅ Правильные индексы
+                if len(parts) >= 6:
+                    timestamp = parts[0]
+                    number = parts[1]
+                    color = parts[2]
+                    
+                    # Парсим дату для красивого отображения
+                    try:
+                        date_obj = datetime.strptime(timestamp.split()[0], "%Y-%m-%d")
+                        date_str = date_obj.strftime("%d.%m")
+                        time_str = timestamp.split()[1][:5] if ' ' in timestamp else ""
+                    except:
+                        date_str = timestamp[:10] if len(timestamp) >= 10 else timestamp
+                        time_str = ""
+                    
+                    if color == 'з':
+                        emoji = "🟢"
+                        color_text = "ЗЕЛЕНОЕ"
+                    elif color == 'к':
+                        emoji = "🔴"
+                        color_text = "КРАСНОЕ"
+                    else:  # 'ч'
+                        emoji = "⚫"
+                        color_text = "ЧЕРНОЕ"
+                    
+                    text += f"• {date_str} {time_str} | {emoji} <b>{number}</b> ({color_text})\n"
 
         bot.reply_to(message, text, parse_mode="HTML")
 
@@ -10788,7 +11488,7 @@ def drag_race_game(message):
 
         # 7. Генерируем результат (60% победа, 40% проигрыш)
         speed = random.randint(90, 320)  # Рандомная скорость
-        is_win = random.random() < 0.6  # 60% шанс на победу
+        is_win = random.random() < 0.4  # 60% шанс на победу
 
         # 8. Формируем текст результата
         if is_win:
@@ -11169,6 +11869,7 @@ HELP_CONTENT = {
 
 [🃏] <b>играть [ставка]</b>
 [🎰] <b>слот [ставка]</b>
+[🍹] <b>бомба [ставка]</b>
 [🐿️] <b>белка [ставка]</b>
 [🏎️] <b>разгон [ставка]</b>
 [💣] <b>мины [ставка]</b>
@@ -14000,36 +14701,99 @@ def user_mention(user):
     return f"<a href='tg://user?id={user.id}'>{name}</a>"
 
 
+# ================== УЛУЧШЕННЫЙ БОНУС И ФЕРМА С ПРОВЕРКОЙ ОПИСАНИЯ ==================
+
+# Текст, который должен быть в описании профиля для получения улучшенного бонуса
+REQUIRED_BIO_TEXT = "@meow_gamechat_bot Лучший игровой чат-бот. Присоединяйся!"
+
+def check_user_bio(user_id):
+    """
+    Проверяет, содержит ли описание профиля пользователя нужный текст.
+    Возвращает True, если текст найден, иначе False.
+    """
+    try:
+        # Получаем информацию о пользователе
+        user = bot.get_chat(user_id)
+        # В объекте chat может быть поле 'bio' (для пользователей)
+        # Для групп/каналов его может не быть, но нас интересуют пользователи.
+        user_bio = getattr(user, 'bio', '')
+        
+        if user_bio and REQUIRED_BIO_TEXT in user_bio:
+            logger.info(f"✅ Пользователь {user_id} имеет нужный текст в bio.")
+            return True
+        else:
+            logger.info(f"❌ Пользователь {user_id} НЕ имеет нужный текст в bio.")
+            return False
+    except Exception as e:
+        logger.error(f"Ошибка при проверке bio пользователя {user_id}: {e}")
+        # В случае ошибки (например, бот не имеет прав или это не пользователь)
+        # считаем, что текст не найден.
+        return False
+
+def format_timedelta(td):
+    """Форматирует timedelta в строку 'Xч Yм'"""
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    return f"{hours}ч {minutes}м"
+
+def user_mention(user):
+    """Создает HTML-ссылку на пользователя"""
+    name = user.first_name or "Пользователь"
+    return f"<a href='tg://user?id={user.id}'>{name}</a>"
+
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "бонус")
 def bonus_cmd(message):
     user_id = message.from_user.id
     user_data = get_user_data(user_id)
     today = date.today().isoformat()
 
+    # Проверяем, получал ли пользователь бонус сегодня
     if user_data.get("last_bonus") == today:
         now = datetime.now()
         tomorrow = datetime.combine(date.today() + timedelta(days=1), datetime.min.time())
-        bot.send_message(
-            message.chat.id,
-            f"⏳ Бонус уже был\nЧерез {format_timedelta(tomorrow - now)}"
+        time_left = tomorrow - now
+        # Отвечаем на сообщение пользователя
+        bot.reply_to(
+            message,
+            f"⏳ {user_mention(message.from_user)}, ты уже получал бонус сегодня.\n"
+            f"Следующий бонус будет доступен через {format_timedelta(time_left)}."
         )
         return
 
-    bonus = random.randint(1200, 8000)
-    actual = add_income(user_id, bonus, "bonus")
+    # Проверяем наличие текста в описании профиля
+    has_bio_text = check_user_bio(user_id)
+
+    if has_bio_text:
+        # Улучшенный бонус (10.000 - 35.000)
+        bonus = random.randint(10000, 35000)
+        actual_bonus = add_income(user_id, bonus, "bonus_premium")
+        # Форматируем сообщение
+        response_text = (
+            f"🥞 {user_mention(message.from_user)}, на твой баланс был начислен бонус "
+            f"<code>{format_number(actual_bonus)}$</code>.\n"
+            f"<b>Спасибо за продвижение нашего бота!</b>"
+        )
+        logger.info(f"Пользователь {user_id} получил ПРЕМИУМ бонус {actual_bonus}$")
+    else:
+        # Обычный бонус (1.000 - 5.000)
+        bonus = random.randint(1000, 5000)
+        actual_bonus = add_income(user_id, bonus, "bonus")
+        # Форматируем сообщение
+        response_text = (
+            f"🍀 {user_mention(message.from_user)}, на твой баланс начислено "
+            f"<code>{format_number(actual_bonus)}$</code>.\n"
+            f"Сумму ежедневного бонуса можно увеличить, вставь в описании своего аккаунта:\n"
+            f"<code>{REQUIRED_BIO_TEXT}</code>"
+        )
+        logger.info(f"Пользователь {user_id} получил обычный бонус {actual_bonus}$")
+
+    # Записываем дату получения бонуса
     user_data["last_bonus"] = today
     save_casino_data()
 
-    mention = user_mention(message.from_user)
-
-    bot.send_message(
-        message.chat.id,
-        f"🎁 {mention}, бонус <b>{actual}$</b> был начислен на твой баланс 💸\n\n"
-        f"1. ⚒️ <a href='{DEV_LINK}'>Разработчик</a>\n"
-        f"2. 🥝 <a href='{CHAT_LINK}'>Наш чат</a>",
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+    # Отправляем ответ на сообщение пользователя
+    bot.reply_to(message, response_text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "ферма")
@@ -14038,32 +14802,55 @@ def farm_cmd(message):
     user_data = get_user_data(user_id)
     now = datetime.now()
 
-    last = user_data.get("last_farm")
-    if last:
-        last_dt = datetime.fromisoformat(last)
-        diff = now - last_dt
-        if diff < timedelta(hours=2):
-            bot.send_message(
-                message.chat.id,
-                f"🚜 Ферма на перезарядке\nЧерез {format_timedelta(timedelta(hours=2) - diff)}"
+    # Проверяем, не прошло ли 2 часа с последней фермы
+    last_farm_str = user_data.get("last_farm")
+    if last_farm_str:
+        last_farm_dt = datetime.fromisoformat(last_farm_str)
+        time_diff = now - last_farm_dt
+        cooldown = timedelta(hours=2)
+        if time_diff < cooldown:
+            time_left = cooldown - time_diff
+            # Отвечаем на сообщение пользователя
+            bot.reply_to(
+                message,
+                f"🚜 {user_mention(message.from_user)}, ферма ещё отдыхает.\n"
+                f"Сможешь собрать урожай через {format_timedelta(time_left)}."
             )
             return
 
-    earned = random.randint(500, 5000)
-    actual = add_income(user_id, earned, "farm")
+    # Проверяем наличие текста в описании профиля для увеличения дохода с фермы
+    has_bio_text = check_user_bio(user_id)
+
+    if has_bio_text:
+        # Увеличенный доход (10.000 - 35.000)
+        earned = random.randint(10000, 35000)
+        actual_earned = add_income(user_id, earned, "farm_premium")
+        # Форматируем сообщение
+        response_text = (
+            f"🚜 {user_mention(message.from_user)}, ты отлично поработал на ферме и заработал "
+            f"<code>{format_number(actual_earned)}$</code>.\n"
+            f"<b>Спасибо за продвижение нашего бота!</b>"
+        )
+        logger.info(f"Пользователь {user_id} получил ПРЕМИУМ доход с фермы {actual_earned}$")
+    else:
+        # Обычный доход (500 - 5.000)
+        earned = random.randint(500, 5000)
+        actual_earned = add_income(user_id, earned, "farm")
+        # Форматируем сообщение
+        response_text = (
+            f"🚜 {user_mention(message.from_user)}, ты заработал на ферме "
+            f"<code>{format_number(actual_earned)}$</code>.\n"
+            f"Доход с фермы можно увеличить, вставь в описании своего аккаунта:\n"
+            f"<code>{REQUIRED_BIO_TEXT}</code>"
+        )
+        logger.info(f"Пользователь {user_id} получил обычный доход с фермы {actual_earned}$")
+
+    # Обновляем время последней фермы
     user_data["last_farm"] = now.isoformat()
     save_casino_data()
 
-    mention = user_mention(message.from_user)
-
-    bot.send_message(
-        message.chat.id,
-        f"🚜 {mention}, ты заработал <b>{actual}$</b> на ферме 💸\n\n"
-        f"1. ⚒️ <a href='{DEV_LINK}'>Разработчик</a>\n"
-        f"2. 🥝 <a href='{CHAT_LINK}'>Наш чат</a>",
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+    # Отправляем ответ на сообщение пользователя
+    bot.reply_to(message, response_text, parse_mode="HTML", disable_web_page_preview=True)
             
             # ================== КРЕСТИКИ-НОЛИКИ (С ЗАЩИТОЙ) ==================
 import random
@@ -16393,9 +17180,9 @@ def my_house(message):
         if not user_data.get("house"):
             bot.send_message(
                 message.chat.id,
-                f"{user_mention}, у вас нет дома!\n\n"
-                f"<b>Магазин домов:</b> <code>магазин домов</code>\n"
-                f"<b>Купить дом:</b> <code>купить дом [название]</code>",
+                f"🏠 {user_mention}, у вас нет дома!\n\n"
+                f"🛒 <b>Магазин домов:</b> <code>магазин домов</code>\n"
+                f"💳 <b>Купить дом:</b> <code>купить дом [название]</code>",
                 parse_mode="HTML"
             )
             return
@@ -16413,24 +17200,24 @@ def my_house(message):
         house["profit_accumulated"] = accumulated
 
         house_text = (
-            f"<b>Ваш дом</b> | {user_mention}\n\n"
-            f"<b>«{house['name'].capitalize()}»</b>\n\n"
-            f"<b>Финансы:</b>\n"
-            f"Прибыль/час: {format_number(house_info['profit_per_hour'])}$\n"
-            f"Накоплено: {format_number(accumulated)}$\n"
-            f"Прошло часов: {hours_passed:.1f}\n"
-            f"Содержание: {format_number(house_info['upkeep_cost'])}$/день\n\n"
-            f"<i>Доход накапливается автоматически</i>"
+            f"🏡 <b>Твой дом</b> | {user_mention}\n\n"
+            f"✨ <b>«{house['name'].capitalize()}»</b>\n\n"
+            f"💰 <b>Финансы:</b>\n"
+            f"├ 💵 Прибыль/час: <code>{format_number(house_info['profit_per_hour'])}$</code>\n"
+            f"├ 💎 Накоплено: <code>{format_number(accumulated)}$</code>\n"
+            f"├ ⏱ Прошло часов: <code>{hours_passed:.1f}</code>\n"
+            f"└ 🛠 Содержание: <code>{format_number(house_info['upkeep_cost'])}$</code>/день\n\n"
+            f"💫 <i>Доход накапливается автоматически</i>"
         )
 
-        # Клавиатура
+        # Клавиатура с эмодзи
         markup = InlineKeyboardMarkup()
         markup.row(
-            InlineKeyboardButton("Собрать аренду", callback_data=f"house_collect_{user_id}"),
-            InlineKeyboardButton("Оплатить", callback_data=f"house_upkeep_{user_id}")
+            InlineKeyboardButton("💰 Собрать аренду", callback_data=f"house_collect_{user_id}"),
+            InlineKeyboardButton("🔧 Оплатить", callback_data=f"house_upkeep_{user_id}")
         )
         markup.row(
-            InlineKeyboardButton("В магазин", callback_data=f"house_shop_{user_id}")
+            InlineKeyboardButton("🛒 В магазин", callback_data=f"house_shop_{user_id}")
         )
 
         # Отправляем сообщение
@@ -16467,7 +17254,7 @@ def my_house(message):
         logger.error(f"Ошибка отображения дома: {e}")
         bot.send_message(
             message.chat.id,
-            "Произошла ошибка при загрузке информации о доме!"
+            "❌ Произошла ошибка при загрузке информации о доме!"
         )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("house_collect_"))
@@ -16484,7 +17271,7 @@ def house_collect_callback(call):
         user_mention = get_user_mention(call.from_user)
 
         if not user_data.get("house"):
-            bot.answer_callback_query(call.id, "У вас нет дома!", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ У вас нет дома!", show_alert=True)
             return
 
         update_house_stats(user_data)
@@ -16494,7 +17281,7 @@ def house_collect_callback(call):
         house["profit_accumulated"] = accumulated
 
         if accumulated <= 0:
-            bot.answer_callback_query(call.id, "Нет накопленной аренды!", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Нет накопленной аренды!", show_alert=True)
             return
 
         # Начисляем аренду
@@ -16506,21 +17293,21 @@ def house_collect_callback(call):
         # Обновляем сообщение
         house_info = HOUSE_DATA[house["name"]]
         new_text = (
-            f"<b>Ваш дом</b> | {user_mention}\n\n"
-            f"<b>«{house['name'].capitalize()}»</b>\n\n"
-            f"<b>Аренда собрана!</b>\n"
-            f"Получено: {format_number(accumulated)}$\n"
-            f"Баланс: {format_number(user_data['balance'])}$\n\n"
-            f"Прибыль/час: {format_number(house_info['profit_per_hour'])}$"
+            f"🏡 <b>Твой дом</b> | {user_mention}\n\n"
+            f"✨ <b>«{house['name'].capitalize()}»</b>\n\n"
+            f"✅ <b>Аренда собрана!</b>\n"
+            f"├ 💰 Получено: <code>{format_number(accumulated)}$</code>\n"
+            f"└ 💳 Баланс: <code>{format_number(user_data['balance'])}$</code>\n\n"
+            f"📈 Прибыль/час: <code>{format_number(house_info['profit_per_hour'])}$</code>"
         )
 
         markup = InlineKeyboardMarkup()
         markup.row(
-            InlineKeyboardButton("Собрать аренду", callback_data=f"house_collect_{user_id}"),
-            InlineKeyboardButton("Оплатить содержание", callback_data=f"house_upkeep_{user_id}")
+            InlineKeyboardButton("💰 Собрать аренду", callback_data=f"house_collect_{user_id}"),
+            InlineKeyboardButton("🔧 Оплатить", callback_data=f"house_upkeep_{user_id}")
         )
         markup.row(
-            InlineKeyboardButton("В магазин", callback_data=f"house_shop_{user_id}")
+            InlineKeyboardButton("🛒 В магазин", callback_data=f"house_shop_{user_id}")
         )
 
         try:
@@ -16542,7 +17329,7 @@ def house_collect_callback(call):
 
         bot.answer_callback_query(
             call.id,
-            f"Получено {format_number(accumulated)}$"
+            f"✅ Получено {format_number(accumulated)}$"
         )
         logger.info(
             f"Пользователь {call.from_user.username} собрал аренду: {accumulated}$"
@@ -16552,7 +17339,7 @@ def house_collect_callback(call):
         logger.error(f"Ошибка сбора аренды: {e}")
         bot.answer_callback_query(
             call.id,
-            "Ошибка при сборе аренды!",
+            "❌ Ошибка при сборе аренды!",
             show_alert=True
         )
 
