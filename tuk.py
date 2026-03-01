@@ -1563,129 +1563,115 @@ def calculate_total_value(quantity):
 def send_pumpkin_to_chat(chat_id):
     """Отправляет сообщение о тыкве в конкретный чат"""
     try:
-        # Проверяем, нет ли уже активного события в этом чате
+        # Если уже есть активная тыква — удаляем старую
         if chat_id in active_pumpkin_events:
-            return False
-        
-        # Генерируем уникальный ID для события
-        event_id = f"pumpkin_{chat_id}_{int(time.time())}"
+            try:
+                old_msg_id = active_pumpkin_events[chat_id].get("message_id")
+                if old_msg_id:
+                    bot.delete_message(chat_id, old_msg_id)
+            except:
+                pass
+            active_pumpkin_events.pop(chat_id, None)
+
         reward = calculate_pumpkin_value()
-        
-        # Сохраняем информацию о событии
-        active_pumpkin_events[chat_id] = {
-            "event_id": event_id,
-            "reward": reward,
-            "active": True,
-            "message_id": None
-        }
-        
-        # Создаем клавиатуру с кнопкой
+
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("Сорвать тыкву", callback_data=f"harvest_pumpkin_{chat_id}_{event_id}"))
-        
-        # Отправляем сообщение
+        kb.add(InlineKeyboardButton("🎃 Сорвать тыкву", callback_data="harvest_pumpkin"))
+
         msg = bot.send_photo(
             chat_id,
             PUMPKIN_IMAGE_URL,
-            caption="🎃 Успейте сорвать тыкву пока не сорвал кто-то другой",
+            caption="🎃 Успей сорвать тыкву, пока её не забрал кто-то другой!",
             reply_markup=kb
         )
-        
-        # Сохраняем ID сообщения
-        active_pumpkin_events[chat_id]["message_id"] = msg.message_id
-        
+
+        active_pumpkin_events[chat_id] = {
+            "reward": reward,
+            "active": True,
+            "message_id": msg.message_id
+        }
+
         logger.info(f"🎃 Тыква отправлена в чат {chat_id} (награда: {reward}$)")
         return True
-        
+
     except Exception as e:
         logger.error(f"Ошибка отправки тыквы в чат {chat_id}: {e}")
-        if chat_id in active_pumpkin_events:
-            del active_pumpkin_events[chat_id]
+        active_pumpkin_events.pop(chat_id, None)
         return False
+
 
 # ---------- АВТОМАТИЧЕСКАЯ РАССЫЛКА ТЫКВ ----------
 def pumpkin_scheduler():
     """Автоматически отправляет тыквы в чаты с random интервалом"""
     while True:
         try:
-            # Ждем от 30 минут до 2 часов
-            delay = random.randint(1800, 7200)  # 30-120 минут в секундах
+            delay = random.randint(1800, 7200)
             time.sleep(delay)
-            
-            # Загружаем список чатов
+
             chats = load_pumpkin_chats()
             if not chats:
                 logger.info("🎃 Нет чатов для рассылки тыкв")
                 continue
-            
-            # Выбираем случайный чат
+
             chat_id = random.choice(chats)
-            
-            # Отправляем тыкву
             send_pumpkin_to_chat(chat_id)
-            
+
         except Exception as e:
             logger.error(f"Ошибка в планировщике тыкв: {e}")
             time.sleep(60)
 
+
 # ---------- ОБРАБОТЧИК КНОПКИ "СОРВАТЬ ТЫКВУ" ----------
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("harvest_pumpkin_"))
+@bot.callback_query_handler(func=lambda c: c.data == "harvest_pumpkin")
 def harvest_pumpkin_callback(call):
     try:
-        # Разбираем callback_data
-        parts = call.data.split("_")
-        if len(parts) < 4:
-            bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
-            return
-            
-        chat_id = int(parts[2])
-        event_id = parts[3]
-        
-        # Проверяем, активно ли событие
-        if chat_id not in active_pumpkin_events:
-            bot.answer_callback_query(call.id, "❌ Тыква уже сорвана!", show_alert=True)
-            return
-        
-        event = active_pumpkin_events[chat_id]
-        if not event["active"] or event["event_id"] != event_id:
-            bot.answer_callback_query(call.id, "❌ Тыква уже сорвана!", show_alert=True)
-            return
-        
-        # Помечаем событие как неактивное
-        event["active"] = False
-        
-        # Получаем информацию о пользователе
+        chat_id = call.message.chat.id
         user_id = call.from_user.id
         user_name = call.from_user.first_name
         mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
+
+        if chat_id not in active_pumpkin_events:
+            bot.answer_callback_query(call.id, "❌ Тыква уже сорвана!", show_alert=True)
+            return
+
+        event = active_pumpkin_events[chat_id]
+
+        if not event["active"]:
+            bot.answer_callback_query(call.id, "❌ Тыква уже сорвана!", show_alert=True)
+            return
+
         reward = event["reward"]
-        
-        # Обновляем статистику пользователя
+
+        # Блокируем повторное нажатие
+        event["active"] = False
+
+        # Обновляем статистику
         update_pumpkin_stats(user_id, 1, reward)
-        
+
         # Удаляем сообщение с кнопкой
         try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except Exception as e:
-            logger.error(f"Не удалось удалить сообщение с тыквой: {e}")
-        
-        # Отправляем новое сообщение с результатом
+            bot.delete_message(chat_id, event["message_id"])
+        except:
+            pass
+
+        # Полностью удаляем событие
+        active_pumpkin_events.pop(chat_id, None)
+
         result_text = (
-            f"{mention}, поздравляю ты первее всех в этом чате сорвал тыкву себе 🎃\n\n"
+            f"{mention}, поздравляю! Ты первым сорвал тыкву 🎃\n\n"
             f"💰 Награда: <code>{reward:,}$</code>\n\n"
-            f"📊 Узнать свою статистику можно введя команду <code>мои тыквы</code>"
+            f"📊 Посмотреть статистику: <code>мои тыквы</code>"
         )
-        
+
         bot.send_message(chat_id, result_text, parse_mode="HTML")
-        
-        # Удаляем событие из активных
-        del active_pumpkin_events[chat_id]
-        
         bot.answer_callback_query(call.id, f"✅ +{reward:,}$")
-        
+
     except Exception as e:
         logger.error(f"Ошибка при срыве тыквы: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+        try:
+            bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+        except:
+            pass
 
 # ---------- КОМАНДА "МОИ ТЫКВЫ" ----------
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "мои тыквы")
@@ -1875,7 +1861,7 @@ def admin_throw_pumpkin(message):
         return
     
     # ID чата, куда нужно кинуть тыкву
-    target_chat_id = -1003719928505
+    target_chat_id = -1003279681531
     
     # Отправляем тыкву в указанный чат
     if send_pumpkin_to_chat(target_chat_id):
@@ -11974,6 +11960,9 @@ HELP_CONTENT = {
 [🎣] <b>рыбачить</b> — Начать рыбалку
 [🐟] <b>моя рыбалка</b> — Статистика рыбалок
 
+<b>🍹 ОХОТА НА ТЫКВ:</b>
+[🎃] <b>мои тыквы</b> — меню продажи и информации
+
 """,
 
     # ----- ДОНАТ (СТРАНИЦА 2) - С ОПИСАНИЯМИ -----
@@ -17783,62 +17772,68 @@ def car_wash(call):
         logger.error(f"Ошибка car_wash: {e}")
         bot.send_message(call.message.chat.id, "❌ Ошибка при мойке машины.")
 
-# ================== СТАТИСТИКА ПЕРЕВОДОВ (JSON) ==================
+# ================== СИСТЕМА ЛИМИТОВ ПЕРЕВОДОВ (МНОГОКРАТНОЕ УВЕЛИЧЕНИЕ) ==================
 
-TRANSFER_STATS_FILE = "transfer_stats.json"
+# Файл для хранения лимитов пользователей
+UPGRADED_LIMITS_FILE = "upgraded_limits.json"
+DEFAULT_DAILY_LIMIT = 1_000_000  # 1 млн - стандартный лимит
+UPGRADE_INCREMENT = 500_000  # +500к за каждую покупку
+UPGRADE_PRICE_STARS = 10  # Стоимость одного апгрейда в звездах
 
-def load_transfer_stats():
-    """Загружает статистику переводов из JSON"""
+def load_upgraded_limits():
+    """
+    Загружает данные о купленных улучшениях.
+    Возвращает словарь вида: { user_id: количество_купленных_апгрейдов }
+    """
     try:
-        if os.path.exists(TRANSFER_STATS_FILE):
-            with open(TRANSFER_STATS_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(UPGRADED_LIMITS_FILE):
+            with open(UPGRADED_LIMITS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         return {}
     except Exception as e:
-        logger.error(f"Ошибка загрузки статистики переводов: {e}")
+        logger.error(f"Ошибка загрузки лимитов: {e}")
         return {}
 
-def save_transfer_stats(stats):
-    """Сохраняет статистику переводов в JSON"""
+def save_upgraded_limits(data):
+    """Сохраняет данные о купленных улучшениях"""
     try:
-        with open(TRANSFER_STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
+        with open(UPGRADED_LIMITS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Ошибка сохранения статистики переводов: {e}")
+        logger.error(f"Ошибка сохранения лимитов: {e}")
 
-def update_transfer_stats(user_id, amount, is_sender=True):
-    """Обновляет статистику переводов пользователя"""
-    stats = load_transfer_stats()
+def get_user_daily_limit(user_id):
+    """
+    Возвращает дневной лимит пользователя.
+    Лимит = DEFAULT_DAILY_LIMIT + (количество_апгрейдов * UPGRADE_INCREMENT)
+    """
+    upgraded_limits = load_upgraded_limits()
+    upgrades = upgraded_limits.get(str(user_id), 0)
+    return DEFAULT_DAILY_LIMIT + (upgrades * UPGRADE_INCREMENT)
+
+def get_user_upgrades_count(user_id):
+    """Возвращает количество купленных улучшений у пользователя"""
+    upgraded_limits = load_upgraded_limits()
+    return upgraded_limits.get(str(user_id), 0)
+
+def add_user_upgrade(user_id):
+    """
+    Добавляет пользователю одно улучшение лимита.
+    Увеличивает счетчик купленных апгрейдов.
+    """
+    upgraded_limits = load_upgraded_limits()
     user_id_str = str(user_id)
     
-    if user_id_str not in stats:
-        stats[user_id_str] = {
-            "total_sent": 0,
-            "total_received": 0
-        }
+    # Увеличиваем счетчик на 1
+    upgraded_limits[user_id_str] = upgraded_limits.get(user_id_str, 0) + 1
     
-    if is_sender:
-        stats[user_id_str]["total_sent"] += amount
-    else:
-        stats[user_id_str]["total_received"] += amount
+    save_upgraded_limits(upgraded_limits)
     
-    save_transfer_stats(stats)
-    return stats[user_id_str]
+    new_limit = DEFAULT_DAILY_LIMIT + (upgraded_limits[user_id_str] * UPGRADE_INCREMENT)
+    logger.info(f"Пользователь {user_id} купил улучшение лимита. Теперь лимит: {new_limit}$")
+    return new_limit
 
-def get_user_transfer_stats(user_id):
-    """Получает статистику переводов пользователя"""
-    stats = load_transfer_stats()
-    user_id_str = str(user_id)
-    
-    if user_id_str not in stats:
-        return {
-            "total_sent": 0,
-            "total_received": 0
-        }
-    
-    return stats[user_id_str]
-
-# ================== 💳 КРАСИВЫЙ ПЕРЕВОД ДЕНЕГ ==================
+# ================== ОБНОВЛЕННАЯ ФУНКЦИЯ ПЕРЕВОДА ==================
 
 @bot.message_handler(func=lambda m: m.text and any(
     m.text.lower().startswith(cmd) for cmd in ["п ", "перевести ", "перевод "]
@@ -17886,12 +17881,57 @@ def transfer_money(message):
             bot.reply_to(message, f"❌ Недостаточно средств! Ваш баланс: {format_number(sender_data['balance'])}$")
             return
 
-        # ПРОВЕРКА ЛИМИТОВ
+        # ПРОВЕРКА МАКСИМАЛЬНОГО БАЛАНСА
         max_balance = 1000000000000000000000000000000
-
         if recipient_data["balance"] + amount > max_balance:
             bot.reply_to(message, f"❌ У получателя достигнут максимальный баланс ({format_number(max_balance)}$)!")
             return
+
+        # ===== НОВЫЙ БЛОК: ПРОВЕРКА ДНЕВНОГО ЛИМИТА ПЕРЕВОДОВ =====
+        today = date.today().isoformat()
+        
+        # Инициализируем статистику переводов на сегодня, если её нет
+        if "daily_transfers" not in sender_data:
+            sender_data["daily_transfers"] = {"date": today, "amount": 0}
+        
+        # Если дата сменилась, обнуляем счетчик
+        if sender_data["daily_transfers"]["date"] != today:
+            sender_data["daily_transfers"] = {"date": today, "amount": 0}
+        
+        # Получаем лимит пользователя (с учетом всех купленных улучшений)
+        user_limit = get_user_daily_limit(sender_id)
+        current_daily_sent = sender_data["daily_transfers"]["amount"]
+        
+        # Проверяем, не превысит ли этот перевод дневной лимит
+        if current_daily_sent + amount > user_limit:
+            # Сколько можно еще перевести сегодня
+            remaining = user_limit - current_daily_sent
+            
+            # Получаем текущее количество улучшений
+            upgrades_count = get_user_upgrades_count(sender_id)
+            next_limit = user_limit + UPGRADE_INCREMENT
+            
+            # Создаем клавиатуру для покупки лимита
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton(
+                f"Увеличить лимит", 
+                callback_data=f"upgrade_limit_{sender_id}"
+            ))
+            
+            bot.reply_to(
+                message,
+                f"🍀 Достигнут дневной лимит по переводу.\n\n"
+                f"📊 <b>Сегодня переведено:</b> <code>{format_number(current_daily_sent)}$</code>\n"
+                f"🎯 <b>Текущий лимит:</b> <code>{format_number(user_limit)}$</code>\n"
+                f"💡 <b>Осталось сегодня:</b> <code>{format_number(remaining)}$</code>\n\n"
+                f"💰 <b>Куплено улучшений:</b> {upgrades_count}\n"
+                f"🚀 <b>Следующий лимит:</b> <code>{format_number(next_limit)}$</code> (+{format_number(UPGRADE_INCREMENT)}$)\n\n"
+                f"Увеличить лимит ещё на {format_number(UPGRADE_INCREMENT)}$ можно за {UPGRADE_PRICE_STARS} ⭐.",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            return
+        # ===== КОНЕЦ НОВОГО БЛОКА =====
 
         # Применяем комиссию 10% если сумма больше 100,000
         fee = 0
@@ -17903,11 +17943,13 @@ def transfer_money(message):
             received_amount = amount - fee
             fee_info = f"💸 <b>Комиссия (10%):</b> <code>-{format_number(fee)}$</code>\n"
 
-        # Переводим
+        # Переводим деньги
         sender_data["balance"] -= amount
-        recipient_data["balance"] = min(
-            recipient_data["balance"] + received_amount, max_balance
-        )
+        recipient_data["balance"] = min(recipient_data["balance"] + received_amount, max_balance)
+        
+        # Обновляем счетчик дневных переводов
+        sender_data["daily_transfers"]["amount"] += amount
+        
         save_casino_data()
 
         # Сохраняем статистику переводов
@@ -17918,10 +17960,10 @@ def transfer_money(message):
         sender_name = f"<a href='tg://user?id={sender_id}'>{message.from_user.first_name}</a>"
         recipient_name = f"<a href='tg://user?id={recipient_id}'>{message.reply_to_message.from_user.first_name}</a>"
 
-        # ИСПРАВЛЕННЫЙ ТЕКСТ: Показываем, сколько получил получатель
+        # Итоговый текст
         text = (
             f"🥥 Вы успешно перевели пользователю {recipient_name}\n"
-            f"{fee_info}"  # Добавляем инфо о комиссии (если была)
+            f"{fee_info}"
             f"🍉 Сумма перевода с комиссией: <code>{format_number(received_amount)}$</code>"
         )
 
@@ -17943,11 +17985,126 @@ def transfer_money(message):
         logger.error(f"Ошибка перевода: {e}")
         bot.reply_to(message, "❌ Произошла ошибка при переводе средств!")
 
-# ================== МОЙ ПРОФИЛЬ (СО СТАТИСТИКОЙ ПЕРЕВОДОВ) ==================
+
+# ================== ОБРАБОТЧИК ПОКУПКИ УВЕЛИЧЕННОГО ЛИМИТА ==================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("upgrade_limit_"))
+def upgrade_limit_callback(call):
+    try:
+        owner_id = int(call.data.split("_")[2])
+        
+        # ЗАЩИТА: проверяем, что нажимает владелец кнопки
+        if call.from_user.id != owner_id:
+            bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
+            return
+
+        user_id = owner_id
+        
+        # Получаем текущий лимит и количество улучшений для информативности
+        current_limit = get_user_daily_limit(user_id)
+        upgrades_count = get_user_upgrades_count(user_id)
+        next_limit = current_limit + UPGRADE_INCREMENT
+
+        # Создаем платеж на 10 звезд
+        payment_id = create_star_payment(user_id, UPGRADE_PRICE_STARS, 0)
+
+        title = "Увеличение лимита переводов"
+        description = (
+            f"Текущий лимит: {format_number(current_limit)}$\n"
+            f"Куплено улучшений: {upgrades_count}\n"
+            f"После оплаты: +{format_number(UPGRADE_INCREMENT)}$ → {format_number(next_limit)}$"
+        )
+        currency = "XTR"
+
+        price = types.LabeledPrice(label="Увеличение лимита", amount=UPGRADE_PRICE_STARS)
+
+        # Удаляем сообщение с кнопкой (предыдущее предупреждение о лимите)
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except:
+            pass
+
+        # Отправляем инвойс
+        bot.send_invoice(
+            chat_id=call.message.chat.id,
+            title=title,
+            description=description,
+            invoice_payload=f"limit_upgrade_{payment_id}_{user_id}",
+            provider_token="",
+            currency=currency,
+            prices=[price],
+            start_parameter="upgrade-limit"
+        )
+
+        logger.info(f"Создан инвойс для увеличения лимита пользователем {user_id}")
+        bot.answer_callback_query(call.id)
+
+    except Exception as e:
+        logger.error(f"Ошибка при создании платежа для лимита: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+
+# Обработка предварительной проверки платежа
+@bot.pre_checkout_query_handler(func=lambda q: q.invoice_payload.startswith("limit_upgrade_"))
+def limit_upgrade_pre_checkout(pre_q):
+    bot.answer_pre_checkout_query(pre_q.id, ok=True)
+
+
+# Обработка успешной оплаты увеличения лимита
+@bot.message_handler(content_types=['successful_payment'], func=lambda m: m.successful_payment.invoice_payload.startswith("limit_upgrade_"))
+def limit_upgrade_payment_success(message):
+    try:
+        payload = message.successful_payment.invoice_payload
+        parts = payload.split("_")
+        payment_id = parts[2]
+        user_id = int(parts[3])
+
+        # Проверяем, что платёж принадлежит этому пользователю
+        if message.from_user.id != user_id:
+            bot.send_message(message.chat.id, "❌ Ошибка: платёж принадлежит другому пользователю!")
+            return
+
+        # Получаем информацию о платеже из базы
+        payment_info = get_star_payment(payment_id)
+        if not payment_info:
+            bot.send_message(message.chat.id, "⚠️ Платёж не найден в базе, но звёзды списаны. Обратитесь к администратору!")
+            return
+
+        # Помечаем платёж как завершённый
+        complete_star_payment(payment_id)
+
+        # Получаем старый лимит до увеличения
+        old_limit = get_user_daily_limit(user_id)
+        upgrades_before = get_user_upgrades_count(user_id)
+        
+        # Увеличиваем лимит пользователя (добавляем одно улучшение)
+        new_limit = add_user_upgrade(user_id)
+
+        mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
+
+        bot.send_message(
+            message.chat.id,
+            f"{mention}, поздравляю, твой лимит в день увеличился!\n\n"
+            f"📈 <b>Было:</b> <code>{format_number(old_limit)}$</code>\n"
+            f"📊 <b>Стало:</b> <code>{format_number(new_limit)}$</code>\n"
+            f"➕ <b>Добавлено:</b> <code>+{format_number(UPGRADE_INCREMENT)}$</code>\n"
+            f"🛒 <b>Всего улучшений:</b> {upgrades_before + 1}\n\n"
+            f"💡 Теперь ты можешь переводить больше средств ежедневно!",
+            parse_mode="HTML"
+        )
+
+        logger.info(f"Пользователь {user_id} успешно улучшил лимит переводов. Новый лимит: {new_limit}$")
+
+    except Exception as e:
+        logger.error(f"Ошибка обработки успешной оплаты лимита: {e}")
+        bot.send_message(message.chat.id, "❌ Произошла ошибка при обработке платежа! Обратитесь к администратору.")
+
+
+# ================== ОБНОВЛЕННАЯ КОМАНДА "МОЙ ПРОФИЛЬ" ==================
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["мой профиль", "профиль"])
 def my_profile(message):
-    """Показывает профиль пользователя со статистикой"""
+    """Показывает профиль пользователя со всей статистикой"""
     user_id = message.from_user.id
     user_name = message.from_user.first_name
     mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
@@ -17959,12 +18116,35 @@ def my_profile(message):
     # Сумма всех переводов = отправлено + получено
     total_transfers = transfer_stats["total_sent"] + transfer_stats["total_received"]
     
-    # Формируем текст профиля
+    # ===== НОВЫЙ БЛОК: ИНФОРМАЦИЯ О ДНЕВНЫХ ЛИМИТАХ =====
+    today = date.today().isoformat()
+    
+    # Получаем дневные переводы
+    if "daily_transfers" not in user_data or user_data["daily_transfers"]["date"] != today:
+        daily_sent = 0
+    else:
+        daily_sent = user_data["daily_transfers"]["amount"]
+    
+    # Текущий лимит пользователя и количество улучшений
+    current_limit = get_user_daily_limit(user_id)
+    upgrades_count = get_user_upgrades_count(user_id)
+    remaining_limit = max(0, current_limit - daily_sent)
+    # ===== КОНЕЦ НОВОГО БЛОКА =====
+    
+    # Формируем текст профиля с новой информацией
     text = (
-        f"👤 Информация про тебя:\n\n"
-        f"🥭 ID: <code>{user_id}</code>\n"
-        f"🥥 Баланс: <code>{format_number(user_data['balance'])}$</code>\n"
-        f"🥞 Сумма всех переводов: <code>{format_number(total_transfers)}$</code>"
+        f"👤 <b>Информация о пользователе</b>\n\n"
+        
+        f"🥭 <b>ID:</b> <code>{user_id}</code>\n"
+        f"🥥 <b>Баланс:</b> <code>{format_number(user_data['balance'])}$</code>\n"
+        f"🥞 <b>Всего переводов:</b> <code>{format_number(total_transfers)}$</code>\n\n"
+        
+        f"<b>📊 Лимиты переводов:</b>\n"
+        f"├ 💸 Переведено сегодня: <code>{format_number(daily_sent)}$</code>\n"
+        f"├ 🎯 Текущий лимит: <code>{format_number(current_limit)}$</code>\n"
+        f"├ 💡 Осталось сегодня: <code>{format_number(remaining_limit)}$</code>\n"
+        f"└ 🛒 Куплено улучшений: <b>{upgrades_count}</b>\n\n"
+        f"<i>Увеличить лимит ещё на {format_number(UPGRADE_INCREMENT)}$ можно за {UPGRADE_PRICE_STARS} ⭐</i>"
     )
     
     # Отправляем ответом на сообщение пользователя
