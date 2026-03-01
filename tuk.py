@@ -18011,19 +18011,16 @@ def upgrade_limit_callback(call):
     try:
         owner_id = int(call.data.split("_")[2])
         
-        # ЗАЩИТА: проверяем, что нажимает владелец кнопки
         if call.from_user.id != owner_id:
             bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
             return
 
         user_id = owner_id
         
-        # Получаем текущий лимит и количество улучшений для информативности
         current_limit = get_user_daily_limit(user_id)
         upgrades_count = get_user_upgrades_count(user_id)
         next_limit = current_limit + UPGRADE_INCREMENT
 
-        # Создаем платеж на 10 звезд
         payment_id = create_star_payment(user_id, UPGRADE_PRICE_STARS, 0)
 
         title = "Увеличение лимита переводов"
@@ -18032,24 +18029,21 @@ def upgrade_limit_callback(call):
             f"Куплено улучшений: {upgrades_count}\n"
             f"После оплаты: +{format_number(UPGRADE_INCREMENT)}$ → {format_number(next_limit)}$"
         )
-        currency = "XTR"
 
         price = types.LabeledPrice(label="Увеличение лимита", amount=UPGRADE_PRICE_STARS)
 
-        # Удаляем сообщение с кнопкой (предыдущее предупреждение о лимите)
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
 
-        # Отправляем инвойс
         bot.send_invoice(
             chat_id=call.message.chat.id,
             title=title,
             description=description,
             invoice_payload=f"limit_upgrade_{payment_id}_{user_id}",
             provider_token="",
-            currency=currency,
+            currency="XTR",
             prices=[price],
             start_parameter="upgrade-limit"
         )
@@ -18062,40 +18056,41 @@ def upgrade_limit_callback(call):
         bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
 
 
-# Обработка предварительной проверки платежа
 @bot.pre_checkout_query_handler(func=lambda q: q.invoice_payload.startswith("limit_upgrade_"))
 def limit_upgrade_pre_checkout(pre_q):
     bot.answer_pre_checkout_query(pre_q.id, ok=True)
 
 
-# Обработка успешной оплаты увеличения лимита
-@bot.message_handler(content_types=['successful_payment'], func=lambda m: m.successful_payment.invoice_payload.startswith("limit_upgrade_"))
+@bot.message_handler(
+    content_types=['successful_payment'],
+    func=lambda m: m.successful_payment and m.successful_payment.invoice_payload.startswith("limit_upgrade_")
+)
 def limit_upgrade_payment_success(message):
     try:
         payload = message.successful_payment.invoice_payload
         parts = payload.split("_")
-        payment_id = parts[2]
+
+        if len(parts) < 4:
+            bot.send_message(message.chat.id, "❌ Ошибка данных платежа!")
+            return
+
+        payment_id = int(parts[2])   # ВАЖНО: приводим к int
         user_id = int(parts[3])
 
-        # Проверяем, что платёж принадлежит этому пользователю
         if message.from_user.id != user_id:
             bot.send_message(message.chat.id, "❌ Ошибка: платёж принадлежит другому пользователю!")
             return
 
-        # Получаем информацию о платеже из базы
         payment_info = get_star_payment(payment_id)
-        if not payment_info:
-            bot.send_message(message.chat.id, "⚠️ Платёж не найден в базе, но звёзды списаны. Обратитесь к администратору!")
-            return
 
-        # Помечаем платёж как завершённый
-        complete_star_payment(payment_id)
+        if payment_info:
+            complete_star_payment(payment_id)
+        else:
+            logger.warning(f"Платёж {payment_id} не найден в базе, но продолжаем обработку")
 
-        # Получаем старый лимит до увеличения
         old_limit = get_user_daily_limit(user_id)
         upgrades_before = get_user_upgrades_count(user_id)
-        
-        # Увеличиваем лимит пользователя (добавляем одно улучшение)
+
         new_limit = add_user_upgrade(user_id)
 
         mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
