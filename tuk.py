@@ -6323,8 +6323,13 @@ def broadcast_remove_chat(call):
     chats = load_broadcast_chats()
     if not chats:
         bot.send_message(call.message.chat.id, "❌ Список чатов пуст!")
-        fake = _make_fake_message_from_call(call)
-        broadcast_panel(fake)
+        # Создаем фейковое сообщение для возврата в панель
+        class FakeMessage:
+            def __init__(self, chat, from_user):
+                self.chat = chat
+                self.from_user = from_user
+        fake_msg = FakeMessage(call.message.chat, call.from_user)
+        broadcast_panel(fake_msg)
         return
 
     text = "🗑 <b>Удаление чата из рассылки</b>\n\nВыбери ID чата для удаления:\n\n"
@@ -6340,30 +6345,52 @@ def broadcast_remove_chat(call):
     msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML")
     bot.register_next_step_handler(msg, process_broadcast_remove_chat)
 
+
 def process_broadcast_remove_chat(message):
     if message.from_user.id not in ADMIN_IDS:
         return
     if not message.text:
         bot.send_message(message.chat.id, "❌ Нужно отправить ID чата!")
-        broadcast_panel(message)
+        # Создаем фейковое сообщение для возврата в панель
+        class FakeMessage:
+            def __init__(self, chat, from_user):
+                self.chat = chat
+                self.from_user = from_user
+        fake_msg = FakeMessage(message.chat, message.from_user)
+        broadcast_panel(fake_msg)
         return
+    
     try:
         chat_id = int(message.text.strip())
         chats = load_broadcast_chats()
         if chat_id not in chats:
             bot.send_message(message.chat.id, f"❌ Чат <code>{chat_id}</code> не найден!", parse_mode="HTML")
-            broadcast_panel(message)
+            class FakeMessage:
+                def __init__(self, chat, from_user):
+                    self.chat = chat
+                    self.from_user = from_user
+            fake_msg = FakeMessage(message.chat, message.from_user)
+            broadcast_panel(fake_msg)
             return
+        
         chats.remove(chat_id)
         if save_broadcast_chats(chats):
             bot.send_message(message.chat.id, f"✅ Чат <code>{chat_id}</code> удалён из рассылки!", parse_mode="HTML")
         else:
             bot.send_message(message.chat.id, "❌ Ошибка сохранения в файл!")
+            
     except ValueError:
         bot.send_message(message.chat.id, "❌ Неверный формат ID! Отправь только цифры.")
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
-    broadcast_panel(message)
+    
+    # Возвращаемся в панель рассылки
+    class FakeMessage:
+        def __init__(self, chat, from_user):
+            self.chat = chat
+            self.from_user = from_user
+    fake_msg = FakeMessage(message.chat, message.from_user)
+    broadcast_panel(fake_msg)
 
 @bot.callback_query_handler(func=lambda c: c.data == "broadcast_list_chats")
 def broadcast_list_chats(call):
