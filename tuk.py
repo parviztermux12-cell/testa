@@ -6866,8 +6866,13 @@ def broadcast_confirm(call):
 
     if not active_chats:
         bot.send_message(call.message.chat.id, "❌ Нет доступных чатов для рассылки!")
-        fake = _make_fake_message_from_call(call)
-        broadcast_panel(fake)
+        # Создаем фейковое сообщение для возврата в панель
+        class FakeMessage:
+            def __init__(self, chat, from_user):
+                self.chat = chat
+                self.from_user = from_user
+        fake_msg = FakeMessage(call.message.chat, call.from_user)
+        broadcast_panel(fake_msg)
         return
 
     content = state["content"]
@@ -6970,8 +6975,15 @@ def broadcast_confirm(call):
     )
 
     _broadcast_states.pop(admin_id, None)
-    fake = _make_fake_message_from_call(call)
-    broadcast_panel(fake)
+    
+    # Создаем фейковое сообщение для возврата в панель
+    class FakeMessage:
+        def __init__(self, chat, from_user):
+            self.chat = chat
+            self.from_user = from_user
+
+    fake_msg = FakeMessage(call.message.chat, call.from_user)
+    broadcast_panel(fake_msg)
 
 @bot.callback_query_handler(func=lambda c: c.data == "broadcast_back")
 def broadcast_back(call):
