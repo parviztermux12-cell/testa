@@ -17811,10 +17811,12 @@ def get_user_daily_limit(user_id):
     upgrades = upgraded_limits.get(str(user_id), 0)
     return DEFAULT_DAILY_LIMIT + (upgrades * UPGRADE_INCREMENT)
 
+
 def get_user_upgrades_count(user_id):
     """Возвращает количество купленных улучшений у пользователя"""
     upgraded_limits = load_upgraded_limits()
     return upgraded_limits.get(str(user_id), 0)
+
 
 def add_user_upgrade(user_id):
     """
@@ -17823,17 +17825,41 @@ def add_user_upgrade(user_id):
     """
     upgraded_limits = load_upgraded_limits()
     user_id_str = str(user_id)
-    
-    # Увеличиваем счетчик на 1
+
     upgraded_limits[user_id_str] = upgraded_limits.get(user_id_str, 0) + 1
-    
+
     save_upgraded_limits(upgraded_limits)
-    
+
     new_limit = DEFAULT_DAILY_LIMIT + (upgraded_limits[user_id_str] * UPGRADE_INCREMENT)
     logger.info(f"Пользователь {user_id} купил улучшение лимита. Теперь лимит: {new_limit}$")
     return new_limit
 
-# ================== ОБНОВЛЕННАЯ ФУНКЦИЯ ПЕРЕВОДА ==================
+
+def get_user_transfer_stats(user_id):
+    data = get_user_data(user_id)
+
+    if "transfer_stats" not in data:
+        data["transfer_stats"] = {
+            "total_sent": 0,
+            "total_received": 0
+        }
+
+    return data["transfer_stats"]
+
+
+def update_transfer_stats(user_id, amount, is_sender=True):
+    data = get_user_data(user_id)
+
+    if "transfer_stats" not in data:
+        data["transfer_stats"] = {
+            "total_sent": 0,
+            "total_received": 0
+        }
+
+    if is_sender:
+        data["transfer_stats"]["total_sent"] += amount
+    else:
+        data["transfer_stats"]["total_received"] += amount
 
 @bot.message_handler(func=lambda m: m.text and any(
     m.text.lower().startswith(cmd) for cmd in ["п ", "перевести ", "перевод "]
@@ -17853,22 +17879,21 @@ def transfer_money(message):
 
         parts = message.text.split()
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Использование: п [сумма] (например: п 1000, п 2k, п 5к, п 1kk, п 3кк)")
+            bot.reply_to(message, "❌ Использование: п [сумма] (пример: п 1000, п 2k, п 5к, п 1kk, п 3кк)")
             return
 
-        # Поддержка суффиксов 'k', 'к' (тысячи) и 'kk', 'кк' (миллионы)
-        amount_text = parts[1].lower()
+        amount_text = parts[1].lower().replace(",", ".").strip()
 
-        if amount_text.endswith("kk") or amount_text.endswith("кк"):
-            amount = int(float(amount_text[:-2]) * 1000000)
-        elif amount_text.endswith("k") or amount_text.endswith("к"):
-            amount = int(float(amount_text[:-1]) * 1000)
-        else:
-            try:
-                amount = int(amount_text)
-            except ValueError:
-                bot.reply_to(message, "❌ Неверный формат суммы!")
-                return
+        try:
+            if amount_text.endswith(("kk", "кк")):
+                amount = int(float(amount_text[:-2]) * 1_000_000)
+            elif amount_text.endswith(("k", "к")):
+                amount = int(float(amount_text[:-1]) * 1_000)
+            else:
+                amount = int(float(amount_text))
+        except:
+            bot.reply_to(message, "❌ Неверный формат суммы!")
+            return
 
         if amount <= 0:
             bot.reply_to(message, "❌ Сумма должна быть положительной!")
@@ -17878,93 +17903,86 @@ def transfer_money(message):
         recipient_data = get_user_data(recipient_id)
 
         if sender_data["balance"] < amount:
-            bot.reply_to(message, f"❌ Недостаточно средств! Ваш баланс: {format_number(sender_data['balance'])}$")
-            return
-
-        # ПРОВЕРКА МАКСИМАЛЬНОГО БАЛАНСА
-        max_balance = 1000000000000000000000000000000
-        if recipient_data["balance"] + amount > max_balance:
-            bot.reply_to(message, f"❌ У получателя достигнут максимальный баланс ({format_number(max_balance)}$)!")
-            return
-
-        # ===== НОВЫЙ БЛОК: ПРОВЕРКА ДНЕВНОГО ЛИМИТА ПЕРЕВОДОВ =====
-        today = date.today().isoformat()
-        
-        # Инициализируем статистику переводов на сегодня, если её нет
-        if "daily_transfers" not in sender_data:
-            sender_data["daily_transfers"] = {"date": today, "amount": 0}
-        
-        # Если дата сменилась, обнуляем счетчик
-        if sender_data["daily_transfers"]["date"] != today:
-            sender_data["daily_transfers"] = {"date": today, "amount": 0}
-        
-        # Получаем лимит пользователя (с учетом всех купленных улучшений)
-        user_limit = get_user_daily_limit(sender_id)
-        current_daily_sent = sender_data["daily_transfers"]["amount"]
-        
-        # Проверяем, не превысит ли этот перевод дневной лимит
-        if current_daily_sent + amount > user_limit:
-            # Сколько можно еще перевести сегодня
-            remaining = user_limit - current_daily_sent
-            
-            # Получаем текущее количество улучшений
-            upgrades_count = get_user_upgrades_count(sender_id)
-            next_limit = user_limit + UPGRADE_INCREMENT
-            
-            # Создаем клавиатуру для покупки лимита
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton(
-                f"Увеличить лимит", 
-                callback_data=f"upgrade_limit_{sender_id}"
-            ))
-            
             bot.reply_to(
                 message,
-                f"🍀 Достигнут дневной лимит по переводу.\n\n"
-                f"📊 <b>Сегодня переведено:</b> <code>{format_number(current_daily_sent)}$</code>\n"
-                f"🎯 <b>Текущий лимит:</b> <code>{format_number(user_limit)}$</code>\n"
-                f"💡 <b>Осталось сегодня:</b> <code>{format_number(remaining)}$</code>\n\n"
-                f"💰 <b>Куплено улучшений:</b> {upgrades_count}\n"
-                f"🚀 <b>Следующий лимит:</b> <code>{format_number(next_limit)}$</code> (+{format_number(UPGRADE_INCREMENT)}$)\n\n"
-                f"Увеличить лимит ещё на {format_number(UPGRADE_INCREMENT)}$ можно за {UPGRADE_PRICE_STARS} ⭐.",
+                f"❌ Недостаточно средств! Баланс: {format_number(sender_data['balance'])}$"
+            )
+            return
+
+        max_balance = 1000000000000000000000000000000
+
+        today = date.today().isoformat()
+
+        if "daily_transfers" not in sender_data:
+            sender_data["daily_transfers"] = {"date": today, "amount": 0}
+
+        if sender_data["daily_transfers"]["date"] != today:
+            sender_data["daily_transfers"] = {"date": today, "amount": 0}
+
+        user_limit = get_user_daily_limit(sender_id)
+        current_daily_sent = sender_data["daily_transfers"]["amount"]
+
+        if current_daily_sent + amount > user_limit:
+            remaining = max(user_limit - current_daily_sent, 0)
+            upgrades_count = get_user_upgrades_count(sender_id)
+            next_limit = user_limit + UPGRADE_INCREMENT
+
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton(
+                "Увеличить лимит",
+                callback_data=f"upgrade_limit_{sender_id}"
+            ))
+
+            bot.reply_to(
+                message,
+                f"🍀 Достигнут дневной лимит.\n\n"
+                f"📊 Сегодня переведено: <code>{format_number(current_daily_sent)}$</code>\n"
+                f"🎯 Лимит: <code>{format_number(user_limit)}$</code>\n"
+                f"💡 Осталось: <code>{format_number(remaining)}$</code>\n\n"
+                f"💰 Куплено улучшений: {upgrades_count}\n"
+                f"🚀 Следующий лимит: <code>{format_number(next_limit)}$</code>\n\n"
+                f"Можно увеличить лимит за {UPGRADE_PRICE_STARS} ⭐",
                 parse_mode="HTML",
                 reply_markup=kb
             )
             return
-        # ===== КОНЕЦ НОВОГО БЛОКА =====
 
-        # Применяем комиссию 10% если сумма больше 100,000
         fee = 0
-        received_amount = amount  # Сумма, которую получит получатель
-        fee_info = ""
+        received_amount = amount
 
         if amount > 100000:
             fee = int(amount * 0.10)
             received_amount = amount - fee
-            fee_info = f"💸 <b>Комиссия (10%):</b> <code>-{format_number(fee)}$</code>\n"
 
-        # Переводим деньги
+        if recipient_data["balance"] + received_amount > max_balance:
+            bot.reply_to(
+                message,
+                f"❌ У получателя достигнут максимальный баланс ({format_number(max_balance)}$)!"
+            )
+            return
+
         sender_data["balance"] -= amount
-        recipient_data["balance"] = min(recipient_data["balance"] + received_amount, max_balance)
-        
-        # Обновляем счетчик дневных переводов
+        recipient_data["balance"] += received_amount
         sender_data["daily_transfers"]["amount"] += amount
-        
+
+        try:
+            update_transfer_stats(sender_id, amount, is_sender=True)
+            update_transfer_stats(recipient_id, received_amount, is_sender=False)
+        except Exception as stats_error:
+            logger.error(f"Ошибка статистики перевода: {stats_error}")
+
         save_casino_data()
 
-        # Сохраняем статистику переводов
-        update_transfer_stats(sender_id, amount, is_sender=True)
-        update_transfer_stats(recipient_id, received_amount, is_sender=False)
-
-        # Кликабельные имена
-        sender_name = f"<a href='tg://user?id={sender_id}'>{message.from_user.first_name}</a>"
         recipient_name = f"<a href='tg://user?id={recipient_id}'>{message.reply_to_message.from_user.first_name}</a>"
 
-        # Итоговый текст
+        fee_info = ""
+        if fee > 0:
+            fee_info = f"💸 Комиссия (10%): <code>-{format_number(fee)}$</code>\n"
+
         text = (
             f"🥥 Вы успешно перевели пользователю {recipient_name}\n"
             f"{fee_info}"
-            f"🍉 Сумма перевода с комиссией: <code>{format_number(received_amount)}$</code>"
+            f"🍉 Получено: <code>{format_number(received_amount)}$</code>"
         )
 
         bot.send_message(
@@ -17975,14 +17993,14 @@ def transfer_money(message):
         )
 
         logger.info(
-            f"Перевод: {message.from_user.first_name} → {message.reply_to_message.from_user.first_name} | "
+            f"Перевод: {sender_id} → {recipient_id} | "
             f"Отправил: {amount}$, Получил: {received_amount}$"
         )
 
     except (IndexError, ValueError) as e:
-        bot.reply_to(message, f"❌ Неверный формат! Использование: п [сумма] (например: п 1000, п 2k, п 5к, п 1kk, п 3кк)\nОшибка: {e}")
+        bot.reply_to(message, f"❌ Неверный формат суммы! Ошибка: {e}")
     except Exception as e:
-        logger.error(f"Ошибка перевода: {e}")
+        logger.exception("Критическая ошибка перевода:")
         bot.reply_to(message, "❌ Произошла ошибка при переводе средств!")
 
 
