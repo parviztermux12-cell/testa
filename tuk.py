@@ -1947,7 +1947,267 @@ def send_telegram_gift(chat_id, user_id, gift_id, text):
 
 print("✅ Система покупки подарков загружена (тексты платные, только себе)")
 
-    
+# ================== 🎲 НОВАЯ ИГРА: ЛЕСТНИЦА (LADDER) ==================
+# Команда: лестница [ставка]
+# Суть: Игроку показывается число от 1 до 100.
+# Нужно угадать, следующее число будет больше или меньше текущего.
+# Можно остановиться в любой момент и забрать текущий выигрыш.
+
+import random
+import uuid
+import time
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# Словарь для хранения активных игр
+active_ladder_games = {}
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("лестница"))
+def ladder_game_start(message):
+    """
+    Запуск игры "Лестница".
+    Использование: лестница [ставка]
+    """
+    try:
+        user_id = message.from_user.id
+        mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
+        chat_id = message.chat.id
+        user_data = get_user_data(user_id)
+
+        # --- Парсинг ставки ---
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message,
+                         "❌ Укажи ставку!\n"
+                         "Пример: <code>лестница 1000</code>",
+                         parse_mode="HTML")
+            return
+
+        try:
+            bet = int(parts[1])
+            if bet <= 0:
+                bot.reply_to(message, "❌ Ставка должна быть больше 0!")
+                return
+        except ValueError:
+            bot.reply_to(message, "❌ Ставка должна быть числом!")
+            return
+
+        # --- Проверка баланса ---
+        if user_data["balance"] < bet:
+            bot.reply_to(message,
+                         f"❌ Недостаточно средств!\n"
+                         f"💰 Нужно: {format_number(bet)}$\n"
+                         f"💳 У тебя: {format_number(user_data['balance'])}$",
+                         parse_mode="HTML")
+            return
+
+        # Списываем ставку
+        user_data["balance"] -= bet
+        save_casino_data()
+
+        # Генерация первого числа
+        first_number = random.randint(1, 100)
+
+        # Генерация уникального ID игры
+        game_id = str(uuid.uuid4())[:8]
+
+        # Сохраняем игру
+        active_ladder_games[game_id] = {
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "message_id": None,
+            "bet": bet,
+            "current_multiplier": 1.0,
+            "current_number": first_number,
+            "last_number": first_number,
+            "active": True,
+            "step": 0
+        }
+
+        # Создаем клавиатуру (ЗАЩИТА: в колбеке передаём ID игры и владельца)
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            InlineKeyboardButton("⬆️", callback_data=f"ladder_higher_{game_id}_{user_id}"),
+            InlineKeyboardButton("⬇️", callback_data=f"ladder_lower_{game_id}_{user_id}")
+        )
+        kb.add(InlineKeyboardButton("💰 ЗАБРАТЬ", callback_data=f"ladder_cashout_{game_id}_{user_id}"))
+
+        text = (
+            f"🎲 <b>ЛЕСТНИЦА</b>\n\n"
+            f"{mention}, твоя ставка: <code>{format_number(bet)}$</code>\n"
+            f"Текущий множитель: <b>x{active_ladder_games[game_id]['current_multiplier']:.2f}</b>\n\n"
+            f"<b>Число: {first_number}</b>\n\n"
+            f"Следующее число будет больше ⬆️ или меньше ⬇️?"
+        )
+
+        msg = bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=kb)
+        active_ladder_games[game_id]["message_id"] = msg.message_id
+
+        # Удаляем команду пользователя (для чистоты)
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except:
+            pass
+
+    except Exception as e:
+        logger.error(f"Ошибка в игре Лестница (старт): {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при создании игры!")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ladder_"))
+def ladder_game_callback(call):
+    """
+    Обработчик ходов в игре "Лестница".
+    """
+    try:
+        data_parts = call.data.split("_")
+        action = data_parts[1]  # higher, lower, cashout
+        game_id = data_parts[2]
+        owner_id = int(data_parts[3])
+
+        # --- ЗАЩИТА: проверяем владельца ---
+        if call.from_user.id != owner_id:
+            bot.answer_callback_query(call.id, "❌ Это не твоя игра!", show_alert=True)
+            return
+
+        # --- Проверка существования игры ---
+        if game_id not in active_ladder_games:
+            bot.answer_callback_query(call.id, "❌ Игра не найдена!", show_alert=True)
+            return
+
+        game = active_ladder_games[game_id]
+
+        # Дополнительная проверка на случай коллизий
+        if call.from_user.id != game["user_id"]:
+            bot.answer_callback_query(call.id, "❌ Это не твоя игра!", show_alert=True)
+            return
+
+        # --- Проверка, активна ли игра ---
+        if not game["active"]:
+            bot.answer_callback_query(call.id, "❌ Игра уже завершена!")
+            return
+
+        user_id = game["user_id"]
+        user_data = get_user_data(user_id)
+        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
+
+        # --- ОБРАБОТКА: ЗАБРАТЬ ВЫИГРЫШ ---
+        if action == "cashout":
+            game["active"] = False
+            win_amount = int(game["bet"] * game["current_multiplier"])
+
+            # Начисляем выигрыш
+            user_data["balance"] += win_amount
+            save_casino_data()
+
+            result_text = (
+                f"🎉 {mention}, ты вовремя остановился!\n\n"
+                f"💰 Выигрыш: <code>{format_number(win_amount)}$</code>\n"
+                f"📈 Множитель: <b>x{game['current_multiplier']:.2f}</b>"
+            )
+
+            bot.edit_message_text(
+                result_text,
+                game["chat_id"],
+                game["message_id"],
+                parse_mode="HTML"
+            )
+
+            del active_ladder_games[game_id]
+            bot.answer_callback_query(call.id)
+            return
+
+        # --- ОБРАБОТКА: ХОД ---
+        if action in ["higher", "lower"]:
+            # Генерируем новое число
+            new_number = random.randint(1, 100)
+
+            # Проверка
+            is_higher = new_number > game["current_number"]
+            is_lower = new_number < game["current_number"]
+            is_equal = new_number == game["current_number"]
+
+            player_won = False
+            if action == "higher" and is_higher:
+                player_won = True
+            elif action == "lower" and is_lower:
+                player_won = True
+
+            # --- Ничья (проигрыш) ---
+            if is_equal:
+                game["active"] = False
+                result_text = (
+                    f"😵 {mention}, выпало то же число <b>{new_number}</b>.\n"
+                    f"💸 Ты потерял <code>{format_number(game['bet'])}$</code>."
+                )
+                bot.edit_message_text(
+                    result_text,
+                    game["chat_id"],
+                    game["message_id"],
+                    parse_mode="HTML"
+                )
+                del active_ladder_games[game_id]
+                bot.answer_callback_query(call.id, "❌ Ничья! Ты проиграл.")
+                return
+
+            # --- Победа ---
+            if player_won:
+                game["current_multiplier"] = round(game["current_multiplier"] + 0.2, 2)
+                game["step"] += 1
+                game["last_number"] = game["current_number"]
+                game["current_number"] = new_number
+
+                potential_win = int(game["bet"] * game["current_multiplier"])
+
+                # Обновляем клавиатуру (с защитой)
+                kb = InlineKeyboardMarkup(row_width=2)
+                kb.add(
+                    InlineKeyboardButton("⬆️", callback_data=f"ladder_higher_{game_id}_{user_id}"),
+                    InlineKeyboardButton("⬇️", callback_data=f"ladder_lower_{game_id}_{user_id}")
+                )
+                kb.add(InlineKeyboardButton("💰 ЗАБРАТЬ", callback_data=f"ladder_cashout_{game_id}_{user_id}"))
+
+                text = (
+                    f"🎲 <b>ЛЕСТНИЦА</b> (Ход {game['step']})\n\n"
+                    f"{mention}, ставка: <code>{format_number(game['bet'])}$</code>\n"
+                    f"Множитель: <b>x{game['current_multiplier']:.2f}</b>\n"
+                    f"Возможный выигрыш: <code>{format_number(potential_win)}$</code>\n\n"
+                    f"Было: <b>{game['last_number']}</b>\n"
+                    f"<b>Стало: {game['current_number']}</b>\n\n"
+                    f"Дальше?"
+                )
+
+                bot.edit_message_text(
+                    text,
+                    game["chat_id"],
+                    game["message_id"],
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
+                bot.answer_callback_query(call.id, f"✅ Угадал! Множитель +0.2")
+
+            # --- Проигрыш ---
+            else:
+                game["active"] = False
+                result_text = (
+                    f"💥 {mention}, ты ошибся!\n\n"
+                    f"Ты выбрал <b>{'ВЫШЕ' if action == 'higher' else 'НИЖЕ'}</b>, а выпало <b>{new_number}</b>.\n"
+                    f"💸 Ты потерял ставку: <code>{format_number(game['bet'])}$</code>"
+                )
+                bot.edit_message_text(
+                    result_text,
+                    game["chat_id"],
+                    game["message_id"],
+                    parse_mode="HTML"
+                )
+                del active_ladder_games[game_id]
+                bot.answer_callback_query(call.id, "❌ Ты проиграл!")
+
+    except Exception as e:
+        logger.error(f"Ошибка в игре Лестница (ход): {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+print("✅ Новая игра 'Лестница' успешно добавлена!")
+
 # ================== НАЛОГОВАЯ СИСТЕМА ==================
 TAX_DB = "taxes.db"
 
@@ -11708,6 +11968,7 @@ HELP_CONTENT = {
 [🃏] <b>играть [ставка]</b>
 [🎰] <b>слот [ставка]</b>
 [🍹] <b>бомба [ставка]</b>
+[☁️] <b>лестница [ставка]</b>
 [🐿️] <b>белка [ставка]</b>
 [🏎️] <b>разгон [ставка]</b>
 [💣] <b>мины [ставка]</b>
