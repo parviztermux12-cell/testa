@@ -8563,13 +8563,13 @@ def top_cmd(message):
     
     # Если лимит <= 100 - показываем сразу
     if limit <= 100:
-        show_top_page(message, users, limit, 1, message.from_user.id)
+        send_top_page(message, users, limit, 1, message.from_user.id)
     else:
         # Для больших списков показываем с пагинацией
-        show_top_page_with_pagination(message, users, limit, 1, message.from_user.id)
+        send_top_page_with_pagination(message, users, limit, 1, message.from_user.id)
 
-def show_top_page(message, users, limit, page, owner_id):
-    """Показывает одну страницу топа"""
+def send_top_page(message, users, limit, page, owner_id):
+    """Отправляет или редактирует сообщение с одной страницей топа"""
     start_idx = (page - 1) * 100
     end_idx = min(start_idx + 100, limit)
     
@@ -8610,10 +8610,26 @@ def show_top_page(message, users, limit, page, owner_id):
             text += f"{i}. User {uid} — {format_number(bal)}$\n"
             continue
     
-    bot.send_message(message.chat.id, text, parse_mode="HTML", disable_web_page_preview=True)
+    # Проверяем, нужно ли отправить новое сообщение или отредактировать существующее
+    if hasattr(message, 'message_id') and message.chat.id:
+        # Редактируем существующее сообщение
+        try:
+            bot.edit_message_text(
+                text,
+                message.chat.id,
+                message.message_id,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            # Если не получилось отредактировать (например, сообщение не найдено), отправляем новое
+            bot.send_message(message.chat.id, text, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        # Отправляем новое сообщение
+        bot.send_message(message.chat.id, text, parse_mode="HTML", disable_web_page_preview=True)
 
-def show_top_page_with_pagination(message, users, limit, page, owner_id):
-    """Показывает страницу топа с кнопками пагинации"""
+def send_top_page_with_pagination(message, users, limit, page, owner_id):
+    """Отправляет или редактирует сообщение с пагинацией"""
     start_idx = (page - 1) * 100
     end_idx = min(start_idx + 100, limit)
     
@@ -8671,8 +8687,36 @@ def show_top_page_with_pagination(message, users, limit, page, owner_id):
     # Кнопка для возврата к обычному топу (без эмодзи)
     kb.add(InlineKeyboardButton("Показать всё", callback_data=f"top_all_{limit}_{owner_id}"))
     
-    bot.send_message(message.chat.id, text, parse_mode="HTML", 
-                    disable_web_page_preview=True, reply_markup=kb)
+    # Проверяем, нужно ли отправить новое сообщение или отредактировать существующее
+    if hasattr(message, 'message_id') and message.chat.id:
+        # Редактируем существующее сообщение
+        try:
+            bot.edit_message_text(
+                text,
+                message.chat.id,
+                message.message_id,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=kb
+            )
+        except Exception as e:
+            # Если не получилось отредактировать, отправляем новое
+            bot.send_message(
+                message.chat.id, 
+                text, 
+                parse_mode="HTML", 
+                disable_web_page_preview=True, 
+                reply_markup=kb
+            )
+    else:
+        # Отправляем новое сообщение
+        bot.send_message(
+            message.chat.id, 
+            text, 
+            parse_mode="HTML", 
+            disable_web_page_preview=True, 
+            reply_markup=kb
+        )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("top_page_"))
 def top_page_callback(call):
@@ -8701,8 +8745,8 @@ def top_page_callback(call):
         
         users.sort(key=lambda x: x[1], reverse=True)
         
-        # Обновляем сообщение
-        show_top_page_with_pagination(call.message, users, limit, page, owner_id)
+        # Обновляем сообщение (редактируем существующее)
+        send_top_page_with_pagination(call.message, users, limit, page, owner_id)
         bot.answer_callback_query(call.id)
         
     except Exception as e:
@@ -8735,8 +8779,8 @@ def top_all_callback(call):
         
         users.sort(key=lambda x: x[1], reverse=True)
         
-        # Показываем первую страницу без пагинации
-        show_top_page(call.message, users, limit, 1, owner_id)
+        # Показываем первую страницу без пагинации (редактируем существующее)
+        send_top_page(call.message, users, limit, 1, owner_id)
         bot.answer_callback_query(call.id)
         
     except Exception as e:
