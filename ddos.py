@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 import concurrent.futures
 
 # ТВОЙ ТОКЕН
-TOKEN = '8259575977:AAHwfVOSF058L-bMan1l6NanOZUNsPrw7D0'
+TOKEN = '8424473949:AAElQO1wZyBjx73qjS67ijZSUmvAfG77eCw'
 bot = telebot.TeleBot(TOKEN)
 
 # Отключаем предупреждения
