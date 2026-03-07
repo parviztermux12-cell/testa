@@ -1497,8 +1497,11 @@ def process_withdraw_amount(message, user_id, to_username):
         logger.error(f"Ошибка при выводе звёзд: {e}")
         bot.send_message(message.chat.id, "❌ Произошла ошибка!", parse_mode="HTML")
 
+# Словарь для временного хранения состояний отмены
+_cancel_states = {}
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("complete_withdraw_"))
-def complete_withdrawal(call):
+def complete_withdrawal_callback(call):
     if call.from_user.id not in ADMIN_IDS:
         bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
         return
@@ -1515,7 +1518,7 @@ def complete_withdrawal(call):
         return
     
     # Отмечаем как выполненный
-    complete_withdrawal(request_id)
+    mark_withdrawal_completed(request_id)
     
     # Уведомляем пользователя
     try:
@@ -1564,31 +1567,50 @@ def cancel_withdrawal_start(call):
         bot.answer_callback_query(call.id, "❌ Запрос уже обработан!", show_alert=True)
         return
     
+    # Сохраняем состояние отмены
+    _cancel_states[call.from_user.id] = {
+        'request_id': request_id,
+        'original_call': call,
+        'message_id': call.message.message_id,
+        'chat_id': call.message.chat.id
+    }
+    
     # Запрашиваем причину отмены
-    msg = bot.send_message(
+    bot.send_message(
         call.message.chat.id,
         f"📝 <b>Отмена вывода #{request_id}</b>\n\n"
         f"Напиши причину отмены вывода средств:",
         parse_mode="HTML"
     )
-    bot.register_next_step_handler(msg, process_cancel_reason, request_id, call)
 
-def process_cancel_reason(message, request_id, original_call):
-    if message.from_user.id not in ADMIN_IDS:
+# Обработчик для всех текстовых сообщений от админов в состоянии отмены
+@bot.message_handler(func=lambda m: m.from_user.id in _cancel_states)
+def process_cancel_reason(message):
+    admin_id = message.from_user.id
+    state = _cancel_states.get(admin_id)
+    
+    if not state:
         return
     
+    request_id = state['request_id']
+    original_call = state['original_call']
     reason = message.text.strip()
+    
     if not reason:
-        bot.send_message(message.chat.id, "❌ Причина не может быть пустой!")
+        bot.send_message(message.chat.id, "❌ Причина не может быть пустой! Напиши причину:")
         return
     
+    # Получаем информацию о запросе
     request = get_withdrawal_request(request_id)
     if not request:
         bot.send_message(message.chat.id, "❌ Запрос не найден!")
+        # Очищаем состояние
+        _cancel_states.pop(admin_id, None)
         return
     
     if request[4] != 'pending':
         bot.send_message(message.chat.id, "❌ Запрос уже обработан!")
+        _cancel_states.pop(admin_id, None)
         return
     
     # Возвращаем звёзды пользователю
@@ -1596,8 +1618,8 @@ def process_cancel_reason(message, request_id, original_call):
     amount = request[3]
     add_stars(user_id, amount)
     
-    # Отмечаем как отменённый (можно создать отдельный статус или использовать completed с пометкой)
-    complete_withdrawal(request_id)  # или создать отдельную функцию для отмены
+    # Отмечаем как отменённый
+    mark_withdrawal_completed(request_id)
     
     # Уведомляем пользователя
     try:
@@ -1619,25 +1641,47 @@ def process_cancel_reason(message, request_id, original_call):
             parse_mode="HTML",
             reply_markup=kb
         )
+        
+        logger.info(f"Пользователь {user_id} уведомлён об отмене вывода #{request_id}")
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {user_id} об отмене: {e}")
     
     # Редактируем сообщение админу
-    bot.edit_message_text(
-        f"❌ <b>Запрос #{request_id} отменён!</b>\n\n"
-        f"Причина: {reason}\n"
-        f"Администратор: {message.from_user.first_name}\n"
-        f"Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
-        original_call.message.chat.id,
-        original_call.message.message_id,
-        parse_mode="HTML"
-    )
+    try:
+        bot.edit_message_text(
+            f"❌ <b>Запрос #{request_id} отменён!</b>\n\n"
+            f"Причина: {reason}\n"
+            f"Администратор: {message.from_user.first_name}\n"
+            f"Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+            state['chat_id'],
+            state['message_id'],
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось отредактировать сообщение админу: {e}")
     
+    # Отправляем подтверждение админу
     bot.send_message(
         message.chat.id,
         f"✅ Запрос #{request_id} отменён. Пользователь уведомлен.",
         parse_mode="HTML"
     )
+    
+    # Очищаем состояние
+    _cancel_states.pop(admin_id, None)
+
+def mark_withdrawal_completed(request_id):
+    """Отмечает запрос на вывод как выполненный"""
+    conn = sqlite3.connect(WITHDRAWAL_REQUESTS_DB)
+    c = conn.cursor()
+    completed_at = datetime.now().isoformat()
+    c.execute("""
+        UPDATE withdrawal_requests 
+        SET status = 'completed', completed_at = ? 
+        WHERE id = ?
+    """, (completed_at, request_id))
+    conn.commit()
+    conn.close()
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("back_to_ref_"))
 def back_to_referral(call):
