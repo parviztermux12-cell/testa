@@ -987,11 +987,143 @@ def list_cheques(message):
     
 
         
-# ================== РЕФЕРАЛЬНАЯ СИСТЕМА (SQLite) ==================
-REFERRAL_BONUS = 15000
+# ================== РЕФЕРАЛЬНАЯ СИСТЕМА (SQLite) С ЗВЕЗДАМИ ==================
+REFERRAL_BONUS = 15000  # Деньги за реферала
+REFERRAL_STARS = 1.5    # Звезды за реферала
 DB_FILE = "referrals.db"
+STAR_BALANCE_DB = "star_balance.db"
+WITHDRAWAL_REQUESTS_DB = "withdrawal_requests.db"
+MIN_WITHDRAWAL = 50  # Минимальная сумма вывода звезд
 
-# Инициализация базы данных
+# ================== ИНИЦИАЛИЗАЦИЯ БАЗ ДАННЫХ ==================
+
+def init_star_balance_db():
+    """Инициализация базы данных для хранения звёзд пользователей"""
+    conn = sqlite3.connect(STAR_BALANCE_DB)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS star_balance (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+    print("✅ База данных звёзд инициализирована")
+
+def init_withdrawal_db():
+    """Инициализация базы данных для запросов на вывод"""
+    conn = sqlite3.connect(WITHDRAWAL_REQUESTS_DB)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS withdrawal_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            amount REAL NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            to_username TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+    print("✅ База данных запросов на вывод инициализирована")
+
+# Инициализация баз
+init_star_balance_db()
+init_withdrawal_db()
+
+# ================== ФУНКЦИИ ДЛЯ РАБОТЫ СО ЗВЁЗДАМИ ==================
+
+def get_star_balance(user_id):
+    """Получает баланс звёзд пользователя"""
+    conn = sqlite3.connect(STAR_BALANCE_DB)
+    c = conn.cursor()
+    c.execute("SELECT balance FROM star_balance WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else 0.0
+
+def add_stars(user_id, amount):
+    """Добавляет звёзды пользователю (положительное или отрицательное число)"""
+    conn = sqlite3.connect(STAR_BALANCE_DB)
+    c = conn.cursor()
+    
+    # Проверяем, есть ли уже запись
+    c.execute("SELECT balance FROM star_balance WHERE user_id = ?", (user_id,))
+    result = c.fetchone()
+    
+    if result:
+        new_balance = result[0] + amount
+        c.execute("UPDATE star_balance SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+    else:
+        c.execute("INSERT INTO star_balance (user_id, balance) VALUES (?, ?)", (user_id, amount))
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def create_withdrawal_request(user_id, username, amount, to_username):
+    """Создаёт запрос на вывод звёзд"""
+    conn = sqlite3.connect(WITHDRAWAL_REQUESTS_DB)
+    c = conn.cursor()
+    
+    created_at = datetime.now().isoformat()
+    c.execute("""
+        INSERT INTO withdrawal_requests (user_id, username, amount, created_at, to_username)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, username, amount, created_at, to_username))
+    
+    request_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return request_id
+
+def get_pending_withdrawals():
+    """Получает все ожидающие запросы на вывод"""
+    conn = sqlite3.connect(WITHDRAWAL_REQUESTS_DB)
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, user_id, username, amount, created_at, to_username 
+        FROM withdrawal_requests 
+        WHERE status = 'pending'
+        ORDER BY created_at ASC
+    """)
+    requests = c.fetchall()
+    conn.close()
+    return requests
+
+def complete_withdrawal(request_id):
+    """Отмечает запрос на вывод как выполненный"""
+    conn = sqlite3.connect(WITHDRAWAL_REQUESTS_DB)
+    c = conn.cursor()
+    completed_at = datetime.now().isoformat()
+    c.execute("""
+        UPDATE withdrawal_requests 
+        SET status = 'completed', completed_at = ? 
+        WHERE id = ?
+    """, (completed_at, request_id))
+    conn.commit()
+    conn.close()
+
+def get_withdrawal_request(request_id):
+    """Получает информацию о запросе на вывод"""
+    conn = sqlite3.connect(WITHDRAWAL_REQUESTS_DB)
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, user_id, username, amount, status, created_at, completed_at, to_username
+        FROM withdrawal_requests 
+        WHERE id = ?
+    """, (request_id,))
+    result = c.fetchone()
+    conn.close()
+    return result
+
+# ================== РЕФЕРАЛЬНАЯ СИСТЕМА (SQLite) ==================
+
+# Инициализация базы данных рефералов
 conn = sqlite3.connect(DB_FILE)
 c = conn.cursor()
 
@@ -1105,12 +1237,15 @@ def process_referral_join(new_user_id, referral_code):
         conn.commit()
         conn.close()
 
-        # Начисляем бонус рефереру
+        # Начисляем бонус рефереру (деньги + звезды)
         referrer_user_data = get_user_data(referrer_id)
         referrer_user_data["balance"] += REFERRAL_BONUS
         save_casino_data()
+        
+        # Начисляем звезды
+        add_stars(referrer_id, REFERRAL_STARS)
 
-        logger.info(f"✅ Бонус начислен: {referrer_id} получил {REFERRAL_BONUS}$ за {new_user_id}")
+        logger.info(f"✅ Бонус начислен: {referrer_id} получил {REFERRAL_BONUS}$ и {REFERRAL_STARS}⭐ за {new_user_id}")
         send_referral_notifications(referrer_id, new_user_id)
         return True
 
@@ -1130,7 +1265,9 @@ def send_referral_notifications(referrer_id, new_user_id):
             f"🎉 {referrer_mention}\n\n"
             f"💌 <b>По твоей ссылке перешёл {new_user_mention}</b>\n\n"
             f"💰 На твой счёт начислено <b>{format_number(REFERRAL_BONUS)}$</b>\n"
-            f"💵 Баланс: {format_number(get_user_data(referrer_id)['balance'])}$\n\n"
+            f"⭐ Начислено <b>{REFERRAL_STARS} звёзд</b>\n"
+            f"💵 Баланс: {format_number(get_user_data(referrer_id)['balance'])}$\n"
+            f"⭐ Звёзд: {get_star_balance(referrer_id)}\n\n"
             f"👥 Всего рефералов: {len(get_user_referral_data(referrer_id)['referrals'])}",
             parse_mode="HTML"
         )
@@ -1139,43 +1276,11 @@ def send_referral_notifications(referrer_id, new_user_id):
             new_user_id,
             f"👋 Добро пожаловать!\n\n"
             f"Ты перешёл по ссылке от {referrer_mention}!\n"
-            f"🎁 Ему начислено <b>{format_number(REFERRAL_BONUS)}$</b> 🎉",
+            f"🎁 Ему начислено <b>{format_number(REFERRAL_BONUS)}$</b> и <b>{REFERRAL_STARS}⭐</b> 🎉",
             parse_mode="HTML"
         )
     except Exception as e:
         logger.error(f"Ошибка уведомления: {e}")
-
-# ================== START МЕНЮ ==================
-@bot.message_handler(commands=["start"])
-def cmd_start(message):
-    user_id = message.from_user.id
-    get_user_data(user_id)
-    get_user_referral_data(user_id)
-
-    # Обработка реферальной ссылки
-    if len(message.text.split()) > 1:
-        start_param = message.text.split()[1]
-        if start_param.startswith('ref_'):
-            process_referral_join(user_id, start_param[4:])
-
-    # Получаем username бота для создания ссылки добавления в группу
-    bot_username = bot.get_me().username
-    add_to_group_url = f"https://t.me/{bot_username}?startgroup=true"
-    
-    mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-    
-    welcome_text = (
-        f"Привет {mention}, я игровой чат бот, для того чтобы узнать обо мне по больше, "
-        f"напиши команду /help или <code>помощь</code>. "
-        f"Если хочешь добавить меня в свой чат, <a href='{add_to_group_url}'>нажми сюда</a> "
-    )
-
-    bot.send_message(
-        message.chat.id,
-        welcome_text,
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
 
 # ================== КОМАНДЫ РЕФЕРАЛЬНОЙ СИСТЕМЫ ==================
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ["реф", "реферал", "мой кабинет", "рефералка"])
@@ -1184,6 +1289,7 @@ def referral_cabinet(message):
     ref_data = get_user_referral_data(user_id)
     referrals_count = len(ref_data["referrals"])
     total_earned = referrals_count * REFERRAL_BONUS
+    star_balance = get_star_balance(user_id)
 
     referrer_info = ""
     if ref_data["referrer"]:
@@ -1196,15 +1302,19 @@ def referral_cabinet(message):
     text = (
         f"👤 <a href='tg://user?id={user_id}'>{message.from_user.first_name}</a>\n\n"
         f"💼 <b>Твой реферальный кабинет</b>\n\n"
-        f"💌 За друга: <b>{format_number(REFERRAL_BONUS)}$</b>\n"
+        f"💌 За друга: <b>{format_number(REFERRAL_BONUS)}$ + {REFERRAL_STARS}⭐</b>\n"
         f"👥 Приглашено: <b>{referrals_count}</b>\n"
-        f"💰 Заработано: <b>{format_number(total_earned)}$</b>"
+        f"💰 Заработано денег: <b>{format_number(total_earned)}$</b>\n"
+        f"⭐ Заработано звёзд: <b>{star_balance}</b>"
         f"{referrer_info}\n\n"
         f"📨 Твоя ссылка ниже 👇"
     )
 
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🔗 Моя ссылка", callback_data=f"ref_link_{user_id}"))
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🔗 Моя ссылка", callback_data=f"ref_link_{user_id}"),
+        InlineKeyboardButton("⭐ Вывести звёзды", callback_data=f"withdraw_stars_{user_id}")
+    )
     if referrals_count > 0:
         kb.add(InlineKeyboardButton("👥 Мои рефералы", callback_data=f"my_refs_{user_id}"))
 
@@ -1224,7 +1334,7 @@ def show_referral_link(call):
     text = (
         f"🔗 <b>Твоя реферальная ссылка:</b>\n\n"
         f"<code>{link}</code>\n\n"
-        f"💰 За друга: <b>{format_number(REFERRAL_BONUS)}$</b>\n"
+        f"💰 За друга: <b>{format_number(REFERRAL_BONUS)}$ + {REFERRAL_STARS}⭐</b>\n"
         f"👥 Твоих друзей: {len(ref_data['referrals'])}"
     )
 
@@ -1246,17 +1356,288 @@ def show_my_referrals(call):
         text = "👥 У тебя пока нет рефералов.\nПригласи друзей по ссылке!"
     else:
         text = f"👥 <b>Твои рефералы ({len(referrals)}):</b>\n\n"
+        total_stars = 0
         for i, ref_id in enumerate(referrals, 1):
             try:
                 ref_user = bot.get_chat(ref_id)
                 text += f"{i}. <a href='tg://user?id={ref_id}'>{ref_user.first_name}</a>\n"
+                total_stars += REFERRAL_STARS
             except:
                 text += f"{i}. Пользователь {ref_id}\n"
-        text += f"\n💰 Всего заработано: <b>{format_number(len(referrals)*REFERRAL_BONUS)}$</b>"
+                total_stars += REFERRAL_STARS
+        text += f"\n💰 Всего заработано денег: <b>{format_number(len(referrals)*REFERRAL_BONUS)}$</b>\n"
+        text += f"⭐ Всего заработано звёзд: <b>{total_stars}</b>"
 
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"back_to_ref_{user_id}"))
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("withdraw_stars_"))
+def withdraw_stars_start(call):
+    user_id = int(call.data.split("_")[2])
+    if call.from_user.id != user_id:
+        bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
+        return
+    
+    star_balance = get_star_balance(user_id)
+    
+    if star_balance < MIN_WITHDRAWAL:
+        bot.answer_callback_query(
+            call.id, 
+            f"❌ Минимальная сумма вывода {MIN_WITHDRAWAL}⭐. У тебя {star_balance}⭐", 
+            show_alert=True
+        )
+        return
+    
+    # Запрашиваем username для вывода
+    msg = bot.send_message(
+        call.message.chat.id,
+        f"📤 <b>Вывод звёзд</b>\n\n"
+        f"Твой баланс: {star_balance}⭐\n"
+        f"Минимальный вывод: {MIN_WITHDRAWAL}⭐\n\n"
+        f"Введи @username (например, @username) кому нужно отправить звёзды:",
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler(msg, process_withdraw_username, user_id)
+
+def process_withdraw_username(message, user_id):
+    if message.from_user.id != user_id:
+        return
+    
+    username = message.text.strip()
+    if not username.startswith('@'):
+        username = '@' + username
+    
+    # Сохраняем username в состоянии и запрашиваем сумму
+    msg = bot.send_message(
+        message.chat.id,
+        f"📤 <b>Вывод звёзд</b>\n\n"
+        f"Получатель: {username}\n"
+        f"Твой баланс: {get_star_balance(user_id)}⭐\n"
+        f"Минимальный вывод: {MIN_WITHDRAWAL}⭐\n\n"
+        f"Введи количество звёзд для вывода:",
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler(msg, process_withdraw_amount, user_id, username)
+
+def process_withdraw_amount(message, user_id, to_username):
+    if message.from_user.id != user_id:
+        return
+    
+    try:
+        amount = float(message.text.strip())
+        star_balance = get_star_balance(user_id)
+        
+        if amount < MIN_WITHDRAWAL:
+            bot.send_message(
+                message.chat.id,
+                f"❌ Минимальная сумма вывода {MIN_WITHDRAWAL}⭐",
+                parse_mode="HTML"
+            )
+            return
+        
+        if amount > star_balance:
+            bot.send_message(
+                message.chat.id,
+                f"❌ Недостаточно звёзд. Твой баланс: {star_balance}⭐",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Создаем запрос на вывод
+        user_name = message.from_user.first_name
+        request_id = create_withdrawal_request(user_id, user_name, amount, to_username)
+        
+        # Списываем звёзды
+        add_stars(user_id, -amount)
+        
+        # Отправляем сообщение пользователю
+        current_hour = datetime.now().hour
+        night_time = "⚠️ Сейчас ночное время (с 23:00 до 8:00). Вывод будет обработан днём/вечером\n\n" if current_hour >= 23 or current_hour < 9 else ""
+        
+        bot.send_message(
+            message.chat.id,
+            f"✅ <b>Запрос на вывод создан!</b>\n\n"
+            f"{night_time}"
+            f"📤 Вывод: {amount}⭐\n"
+            f"👤 Получатель: {to_username}\n"
+            f"🆔 ID запроса: #{request_id}\n\n"
+            f"⏳ Вывод занимает от 1 минуты до 2 часов.\n"
+            f"ℹ️ После обработки ты получишь уведомление.",
+            parse_mode="HTML"
+        )
+        
+        # Отправляем уведомление админам
+        admin_notification_text = (
+            f"🆕 <b>НОВЫЙ ЗАПРОС НА ВЫВОД ЗВЁЗД</b>\n\n"
+            f"🆔 ID запроса: #{request_id}\n"
+            f"👤 Пользователь: <a href='tg://user?id={user_id}'>{user_name}</a>\n"
+            f"📱 Username: {to_username}\n"
+            f"⭐ Сумма: {amount}\n"
+            f"📅 Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+        
+        admin_kb = InlineKeyboardMarkup(row_width=2)
+        admin_kb.add(
+            InlineKeyboardButton("✅ Успешно вывел", callback_data=f"complete_withdraw_{request_id}"),
+            InlineKeyboardButton("❌ Отменить", callback_data=f"cancel_withdraw_{request_id}")
+        )
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                bot.send_message(admin_id, admin_notification_text, parse_mode="HTML", reply_markup=admin_kb)
+            except:
+                pass
+        
+        logger.info(f"Создан запрос на вывод #{request_id}: {user_id} -> {amount}⭐")
+        
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Введи число!", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка при выводе звёзд: {e}")
+        bot.send_message(message.chat.id, "❌ Произошла ошибка!", parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("complete_withdraw_"))
+def complete_withdrawal(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
+        return
+    
+    request_id = int(call.data.split("_")[2])
+    request = get_withdrawal_request(request_id)
+    
+    if not request:
+        bot.answer_callback_query(call.id, "❌ Запрос не найден!", show_alert=True)
+        return
+    
+    if request[4] != 'pending':
+        bot.answer_callback_query(call.id, "❌ Запрос уже обработан!", show_alert=True)
+        return
+    
+    # Отмечаем как выполненный
+    complete_withdrawal(request_id)
+    
+    # Уведомляем пользователя
+    try:
+        user_id = request[1]
+        amount = request[3]
+        to_username = request[7]
+        
+        bot.send_message(
+            user_id,
+            f"✅ <b>Звёзды успешно выведены!</b>\n\n"
+            f"⭐ Сумма: {amount}\n"
+            f"👤 Получатель: {to_username}\n"
+            f"💫 Вывод выполнен через платформу Fragment.\n\n"
+            f"Спасибо за использование бота! ❤️",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+    
+    # Редактируем сообщение админу
+    bot.edit_message_text(
+        f"✅ <b>Запрос #{request_id} выполнен!</b>\n\n"
+        f"Обработано администратором {call.from_user.first_name}\n"
+        f"Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML"
+    )
+    
+    bot.answer_callback_query(call.id, "✅ Запрос отмечен как выполненный!")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("cancel_withdraw_"))
+def cancel_withdrawal_start(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "❌ Это не твоя кнопка!", show_alert=True)
+        return
+    
+    request_id = int(call.data.split("_")[2])
+    request = get_withdrawal_request(request_id)
+    
+    if not request:
+        bot.answer_callback_query(call.id, "❌ Запрос не найден!", show_alert=True)
+        return
+    
+    if request[4] != 'pending':
+        bot.answer_callback_query(call.id, "❌ Запрос уже обработан!", show_alert=True)
+        return
+    
+    # Запрашиваем причину отмены
+    msg = bot.send_message(
+        call.message.chat.id,
+        f"📝 <b>Отмена вывода #{request_id}</b>\n\n"
+        f"Напиши причину отмены вывода средств:",
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler(msg, process_cancel_reason, request_id, call)
+
+def process_cancel_reason(message, request_id, original_call):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    reason = message.text.strip()
+    if not reason:
+        bot.send_message(message.chat.id, "❌ Причина не может быть пустой!")
+        return
+    
+    request = get_withdrawal_request(request_id)
+    if not request:
+        bot.send_message(message.chat.id, "❌ Запрос не найден!")
+        return
+    
+    if request[4] != 'pending':
+        bot.send_message(message.chat.id, "❌ Запрос уже обработан!")
+        return
+    
+    # Возвращаем звёзды пользователю
+    user_id = request[1]
+    amount = request[3]
+    add_stars(user_id, amount)
+    
+    # Отмечаем как отменённый (можно создать отдельный статус или использовать completed с пометкой)
+    complete_withdrawal(request_id)  # или создать отдельную функцию для отмены
+    
+    # Уведомляем пользователя
+    try:
+        user_name = request[2]
+        to_username = request[7]
+        
+        # Кнопка для связи с админом
+        admin_username = "parvizwp"
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton(
+            "Узнать подробнее", 
+            url=f"https://t.me/{admin_username}"
+        ))
+        
+        bot.send_message(
+            user_id,
+            f"⛔ Вывод звёзд был отменён при проверке.\n"
+            f"📄 Причина: {reason}",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+    except Exception as e:
+        logger.error(f"Не удалось уведомить пользователя {user_id} об отмене: {e}")
+    
+    # Редактируем сообщение админу
+    bot.edit_message_text(
+        f"❌ <b>Запрос #{request_id} отменён!</b>\n\n"
+        f"Причина: {reason}\n"
+        f"Администратор: {message.from_user.first_name}\n"
+        f"Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+        original_call.message.chat.id,
+        original_call.message.message_id,
+        parse_mode="HTML"
+    )
+    
+    bot.send_message(
+        message.chat.id,
+        f"✅ Запрос #{request_id} отменён. Пользователь уведомлен.",
+        parse_mode="HTML"
+    )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("back_to_ref_"))
 def back_to_referral(call):
@@ -1275,7 +1656,55 @@ def back_to_referral(call):
     fake_message = FakeMessage(call.message.chat, call.from_user)
     referral_cabinet(fake_message)
 
-# ================== АДМИН КОМАНДА ==================
+# ================== АДМИН КОМАНДА ДЛЯ НАЧИСЛЕНИЯ ЗВЁЗД ==================
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "закинуть")
+def admin_add_stars(message):
+    user_id = message.from_user.id
+    
+    # Проверяем, является ли пользователь админом
+    if user_id not in ADMIN_IDS:
+        # Игнорируем обычных пользователей
+        return
+    
+    if not message.reply_to_message:
+        bot.reply_to(message, "❌ Ответьте на сообщение пользователя, которому хотите начислить звёзды!")
+        return
+    
+    target_user = message.reply_to_message.from_user
+    target_id = target_user.id
+    target_name = target_user.first_name
+    
+    # Начисляем 2000 звёзд
+    amount = 2000
+    add_stars(target_id, amount)
+    
+    admin_mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
+    target_mention = f'<a href="tg://user?id={target_id}">{target_name}</a>'
+    
+    bot.reply_to(
+        message,
+        f"✅ <b>Звёзды начислены!</b>\n\n"
+        f"👤 Пользователь: {target_mention}\n"
+        f"⭐ Сумма: +{amount}\n"
+        f"🛡 Администратор: {admin_mention}",
+        parse_mode="HTML"
+    )
+    
+    # Уведомляем пользователя
+    try:
+        bot.send_message(
+            target_id,
+            f"🎁 <b>Вам начислены звёзды!</b>\n\n"
+            f"⭐ Сумма: +{amount}\n"
+            f"💫 Текущий баланс звёзд: {get_star_balance(target_id)}",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+    
+    logger.info(f"Админ {user_id} начислил {amount}⭐ пользователю {target_id}")
+
+# ================== АДМИН КОМАНДА "РЕФЕРАЛКИ" (ТОП РЕФЕРАЛОВ) ==================
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "рефералки")
 def admin_referrals_top(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -1302,9 +1731,12 @@ def admin_referrals_top(message):
             try:
                 user = bot.get_chat(uid)
                 name = user.first_name
+                star_balance = get_star_balance(uid)
             except:
                 name = f"User {uid}"
-            text += f"{i}. <a href='tg://user?id={uid}'>{name}</a> — <b>{count}</b> реф. ({format_number(count*REFERRAL_BONUS)}$)\n"
+                star_balance = get_star_balance(uid)
+            text += f"{i}. <a href='tg://user?id={uid}'>{name}</a> — <b>{count}</b> реф.\n"
+            text += f"   💰 {format_number(count*REFERRAL_BONUS)}$ | ⭐ {star_balance}\n"
 
     bot.send_message(message.chat.id, text, parse_mode="HTML")
     
