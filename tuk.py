@@ -1308,471 +1308,342 @@ def admin_referrals_top(message):
 
     bot.send_message(message.chat.id, text, parse_mode="HTML")
     
-    # ================== 🌳 СИСТЕМА "ДЕРЕВО ЖИЗНИ" ==================
-TREE_DB = "tree_of_life.db"
+    # ================== 🍬 НОВАЯ ИГРА: КОНФЕТКА (CANDY HUNT) ==================
+# Команда: конфетка [ставка] или конфета [ставка]
+# Поле 2x3 (6 клеток), 3 конфеты, 3 пустых клетки
 
-# Конфигурация дерева жизни
-TREE_CONFIG = {
-    "max_water": 100,           # Максимальный уровень влаги
-    "water_decay_per_hour": 2,   # Убывание влаги в час
-    "fruit_growth_per_water": 1, # Рост плодов за единицу влаги
-    "max_fruits": 50,            # Максимальное количество плодов
-    "fruit_base_price": 1000,     # Базовая цена плода
-    "water_cost": 5000,           # Стоимость полива (1 единица влаги)
-    "cooldown_hours": 1           # Кулдаун между поливами
-}
+import random
+import uuid
 
-# Инициализация базы данных
-def init_tree_db():
-    conn = sqlite3.connect(TREE_DB)
-    c = conn.cursor()
+# Словарь для хранения активных игр
+active_candy_games = {}
+
+# Настройки игры
+CANDY_MULTIPLIER_PER_CANDY = 0.35  # +0.35 к множителю за каждую конфету
+CANDY_TOTAL_CELLS = 6               # Всего клеток 2x3
+CANDY_COUNT = 3                      # Количество конфет
+
+def create_candy_board():
+    """Создает доску и прячет конфеты (3 случайных индекса от 0 до 5)"""
+    candy_positions = random.sample(range(CANDY_TOTAL_CELLS), CANDY_COUNT)
+    return candy_positions
+
+def format_candy_board(opened_cells, candy_positions):
+    """
+    Форматирует доску для отображения.
+    opened_cells: список индексов открытых клеток.
+    candy_positions: список индексов, где лежат конфеты.
+    """
+    board = []
+    for i in range(CANDY_TOTAL_CELLS):
+        if i in opened_cells:
+            # Если клетка открыта, показываем, что там
+            if i in candy_positions:
+                board.append("🍬")  # Конфета
+            else:
+                board.append("⬛")  # Пусто
+        else:
+            board.append("⚫")  # Неоткрытая клетка
+
+    # Собираем в сетку 2x3
+    return (f"{board[0]} | {board[1]} | {board[2]}\n"
+            f"{board[3]} | {board[4]} | {board[5]}")
+
+def check_candy_owner(call, user_id):
+    """Проверка владельца кнопки"""
+    if call.from_user.id != user_id:
+        bot.answer_callback_query(call.id, "❌ Это не твоя игра!", show_alert=True)
+        return False
+    return True
+
+def candy_keyboard(game_id, user_id, opened_cells, show_cashout=False):
+    """Создает клавиатуру для игры"""
+    kb = InlineKeyboardMarkup(row_width=3)
     
-    # Таблица деревьев пользователей
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS user_trees (
-            user_id INTEGER PRIMARY KEY,
-            water_level INTEGER DEFAULT 50,
-            fruits INTEGER DEFAULT 0,
-            last_water TEXT,
-            last_update TEXT,
-            total_fruits_harvested INTEGER DEFAULT 0,
-            total_water_spent INTEGER DEFAULT 0
+    # Создаем кнопки для каждой клетки
+    row1_buttons = []
+    row2_buttons = []
+    
+    for i in range(CANDY_TOTAL_CELLS):
+        button = InlineKeyboardButton(
+            "⚫", 
+            callback_data=f"candy_open_{game_id}_{i}_{user_id}"
         )
-    """)
+        if i < 3:
+            row1_buttons.append(button)
+        else:
+            row2_buttons.append(button)
     
-    conn.commit()
-    conn.close()
-    logger.info("✅ База данных Дерева жизни инициализирована")
+    kb.row(*row1_buttons)
+    kb.row(*row2_buttons)
+    
+    # Кнопка "Забрать выигрыш" (появляется после нахождения хотя бы одной конфеты)
+    if show_cashout:
+        kb.add(InlineKeyboardButton("💸 Забрать выигрыш", callback_data=f"candy_cashout_{game_id}_{user_id}"))
+    
+    return kb
 
-init_tree_db()
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith(("конфетка", "конфета")))
+def candy_game_start(message):
+    """
+    Запуск игры "Конфетка".
+    Использование: конфетка [ставка]
+    """
+    try:
+        user_id = message.from_user.id
+        mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
+        chat_id = message.chat.id
+        user_data = get_user_data(user_id)
 
-def get_user_tree(user_id):
-    """Получает данные дерева пользователя"""
-    conn = sqlite3.connect(TREE_DB)
-    c = conn.cursor()
-    
-    c.execute("SELECT water_level, fruits, last_water, last_update, total_fruits_harvested, total_water_spent FROM user_trees WHERE user_id = ?", (user_id,))
-    result = c.fetchone()
-    
-    if not result:
-        # Создаем новое дерево
-        now = datetime.now().isoformat()
-        c.execute("""
-            INSERT INTO user_trees 
-            (user_id, water_level, fruits, last_water, last_update, total_fruits_harvested, total_water_spent) 
-            VALUES (?, 50, 0, ?, ?, 0, 0)
-        """, (user_id, now, now))
-        conn.commit()
-        
-        conn.close()
-        return {
-            "water_level": 50,
-            "fruits": 0,
-            "last_water": now,
-            "last_update": now,
-            "total_fruits_harvested": 0,
-            "total_water_spent": 0
+        # --- Парсинг ставки ---
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message,
+                         f"{mention}, укажи ставку!\n\n"
+                         f"🍬 <b>Найди 3 конфеты в полях, в остальных трёх - минус ставка</b>\n\n"
+                         f"<b>Пример:</b> <code>конфетка 1000</code>",
+                         parse_mode="HTML")
+            return
+
+        try:
+            bet = int(parts[1])
+            if bet <= 0:
+                bot.reply_to(message, "❌ Ставка должна быть больше 0!")
+                return
+        except ValueError:
+            bot.reply_to(message, "❌ Ставка должна быть числом!")
+            return
+
+        # --- Проверка баланса ---
+        if user_data["balance"] < bet:
+            bot.reply_to(message,
+                         f"❌ {mention}, недостаточно средств!\n\n"
+                         f"💰 Нужно: <code>{format_number(bet)}$</code>\n"
+                         f"💳 У тебя: <code>{format_number(user_data['balance'])}$</code>",
+                         parse_mode="HTML")
+            return
+
+        # Списываем ставку
+        user_data["balance"] -= bet
+        save_casino_data()
+
+        # Генерация уникального ID игры
+        game_id = str(uuid.uuid4())[:8]
+
+        # Создаем доску с конфетами
+        candy_positions = create_candy_board()
+
+        # Сохраняем игру
+        active_candy_games[game_id] = {
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "message_id": None,
+            "bet": bet,
+            "candy_positions": candy_positions,
+            "opened_cells": [],
+            "candies_found": 0,
+            "current_multiplier": 1.0,
+            "active": True
         }
-    
-    conn.close()
-    return {
-        "water_level": result[0],
-        "fruits": result[1],
-        "last_water": result[2],
-        "last_update": result[3],
-        "total_fruits_harvested": result[4],
-        "total_water_spent": result[5]
-    }
 
-def update_user_tree(user_id, data):
-    """Обновляет данные дерева пользователя"""
-    conn = sqlite3.connect(TREE_DB)
-    c = conn.cursor()
-    
-    c.execute("""
-        UPDATE user_trees SET 
-        water_level = ?, fruits = ?, last_water = ?, last_update = ?,
-        total_fruits_harvested = ?, total_water_spent = ?
-        WHERE user_id = ?
-    """, (
-        data["water_level"], data["fruits"], data["last_water"], data["last_update"],
-        data["total_fruits_harvested"], data["total_water_spent"], user_id
-    ))
-    
-    conn.commit()
-    conn.close()
+        # Текст игры
+        text = (f"{mention}, найди конфеты! 🍬\n\n"
+                f"<b>Ставка:</b> <code>{format_number(bet)}$</code>\n"
+                f"<b>Множитель:</b> <code>x1.00</code>\n\n"
+                f"{format_candy_board([], candy_positions)}")
 
-def update_tree_stats(user_id):
-    """Обновляет статистику дерева (убывание влаги и рост плодов)"""
-    tree_data = get_user_tree(user_id)
-    now = datetime.now()
-    
-    if tree_data["last_update"]:
-        last_update = datetime.fromisoformat(tree_data["last_update"])
-        hours_passed = (now - last_update).total_seconds() / 3600
-        
-        if hours_passed >= 1:
-            # Убывание влаги
-            water_loss = min(int(hours_passed * TREE_CONFIG["water_decay_per_hour"]), tree_data["water_level"])
-            tree_data["water_level"] -= water_loss
-            
-            # Рост плодов (только если есть влага)
-            if tree_data["water_level"] > 0:
-                fruit_growth = min(
-                    int(hours_passed * TREE_CONFIG["fruit_growth_per_water"] * (tree_data["water_level"] / 100)),
-                    TREE_CONFIG["max_fruits"] - tree_data["fruits"]
-                )
-                tree_data["fruits"] += fruit_growth
-            
-            tree_data["last_update"] = now.isoformat()
-            update_user_tree(user_id, tree_data)
-    
-    return tree_data
+        # Отправляем сообщение
+        msg = bot.send_message(
+            chat_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=candy_keyboard(game_id, user_id, [], show_cashout=False)
+        )
 
-def water_tree(user_id):
-    """Поливает дерево"""
-    tree_data = get_user_tree(user_id)
-    user_data = get_user_data(user_id)
-    now = datetime.now()
-    
-    # Проверка кулдауна
-    if tree_data["last_water"]:
-        last_water = datetime.fromisoformat(tree_data["last_water"])
-        hours_since_last_water = (now - last_water).total_seconds() / 3600
-        if hours_since_last_water < TREE_CONFIG["cooldown_hours"]:
-            remaining = int((TREE_CONFIG["cooldown_hours"] - hours_since_last_water) * 60)
-            return False, f"⏳ Дерево ещё не хочет пить! Подожди {remaining} минут."
-    
-    # Проверка максимального уровня влаги
-    if tree_data["water_level"] >= TREE_CONFIG["max_water"]:
-        return False, "💧 Дерево уже достаточно полито! Подожди, пока влага убавится."
-    
-    # Проверка баланса
-    water_cost = TREE_CONFIG["water_cost"]
-    if user_data["balance"] < water_cost:
-        return False, f"❌ Недостаточно средств для полива! Нужно {format_number(water_cost)}$"
-    
-    # Полив
-    user_data["balance"] -= water_cost
-    tree_data["water_level"] = min(TREE_CONFIG["max_water"], tree_data["water_level"] + 20)
-    tree_data["last_water"] = now.isoformat()
-    tree_data["total_water_spent"] += water_cost
-    
-    update_user_tree(user_id, tree_data)
-    save_casino_data()
-    
-    return True, f"💧 Дерево полито! Текущая влага: {tree_data['water_level']}/{TREE_CONFIG['max_water']}"
+        # Сохраняем ID сообщения
+        active_candy_games[game_id]["message_id"] = msg.message_id
 
-def harvest_fruits(user_id):
-    """Собирает плоды с дерева"""
-    tree_data = get_user_tree(user_id)
-    user_data = get_user_data(user_id)
-    
-    if tree_data["fruits"] <= 0:
-        return False, "🌳 На дереве нет плодов для сбора!"
-    
-    fruits_to_harvest = tree_data["fruits"]
-    total_value = fruits_to_harvest * TREE_CONFIG["fruit_base_price"]
-    
-    # Начисляем деньги
-    user_data["balance"] += total_value
-    tree_data["fruits"] = 0
-    tree_data["total_fruits_harvested"] += fruits_to_harvest
-    
-    update_user_tree(user_id, tree_data)
-    save_casino_data()
-    
-    return True, f"🍎 Собрано {fruits_to_harvest} плодов! Получено: {format_number(total_value)}$"
+        # Удаляем команду пользователя (для чистоты)
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except:
+            pass
 
-# ================== 🌳 КОМАНДА "МОЁ ДЕРЕВО" ==================
+    except Exception as e:
+        logger.error(f"Ошибка в игре Конфетка (старт): {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при создании игры!")
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() in ["моё дерево", "мое дерево", "дерево жизни"])
-def my_tree_command(message):
-    """Показывает информацию о дереве жизни"""
-    user_id = message.from_user.id
-    mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-    
-    # Обновляем статистику дерева
-    tree_data = update_tree_stats(user_id)
-    
-    # Рассчитываем прогресс
-    water_percent = int((tree_data["water_level"] / TREE_CONFIG["max_water"]) * 100)
-    fruit_percent = int((tree_data["fruits"] / TREE_CONFIG["max_fruits"]) * 100)
-    
-    # Создаем визуальные полоски прогресса
-    water_bar = "█" * (water_percent // 10) + "░" * (10 - (water_percent // 10))
-    fruit_bar = "█" * (fruit_percent // 10) + "░" * (10 - (fruit_percent // 10))
-    
-    # Проверка кулдауна
-    cooldown_info = ""
-    if tree_data["last_water"]:
-        last_water = datetime.fromisoformat(tree_data["last_water"])
-        hours_since = (datetime.now() - last_water).total_seconds() / 3600
-        if hours_since < TREE_CONFIG["cooldown_hours"]:
-            remaining = int((TREE_CONFIG["cooldown_hours"] - hours_since) * 60)
-            cooldown_info = f"⏳ Полив будет доступен через {remaining} мин."
-        else:
-            cooldown_info = "💧 Можно поливать!"
-    
-    text = (
-        f"🌳 <b>ДЕРЕВО ЖИЗНИ</b> 🌳\n\n"
-        f"👤 Владелец: {mention}\n\n"
-        f"💧 <b>Влага:</b> {tree_data['water_level']}/{TREE_CONFIG['max_water']}\n"
-        f"<code>[{water_bar}]</code> {water_percent}%\n\n"
-        f"🍎 <b>Плоды:</b> {tree_data['fruits']}/{TREE_CONFIG['max_fruits']}\n"
-        f"<code>[{fruit_bar}]</code> {fruit_percent}%\n\n"
-        f"📊 <b>Статистика:</b>\n"
-        f"• Всего собрано плодов: {tree_data['total_fruits_harvested']}\n"
-        f"• Потрачено на полив: {format_number(tree_data['total_water_spent'])}$\n"
-        f"• Цена плода: {format_number(TREE_CONFIG['fruit_base_price'])}$\n\n"
-        f"{cooldown_info}"
-    )
-    
-    # Создаем клавиатуру
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("💧 Полить", callback_data=f"tree_water_{user_id}"),
-        InlineKeyboardButton("🍎 Собрать плоды", callback_data=f"tree_harvest_{user_id}")
-    )
-    
-    bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=kb)
-
-# ================== 🌳 ОБРАБОТЧИКИ КНОПОК ДЕРЕВА ==================
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("tree_water_"))
-def tree_water_callback(call):
-    """Обработчик полива дерева"""
+@bot.callback_query_handler(func=lambda c: c.data.startswith("candy_open_"))
+def candy_open_cell(call):
+    """Обработчик открытия клетки"""
     try:
-        user_id = int(call.data.split("_")[2])
-        
-        # Проверка владельца кнопки
-        if call.from_user.id != user_id:
-            bot.answer_callback_query(call.id, "❌ Это не твоё дерево!", show_alert=True)
+        # Разбираем callback_data: candy_open_GAMEID_CELL_OWNERID
+        parts = call.data.split("_")
+        game_id = parts[2]
+        cell = int(parts[3])
+        owner_id = int(parts[4])
+
+        # Проверка владельца
+        if not check_candy_owner(call, owner_id):
             return
-        
-        # Поливаем дерево
-        success, message_text = water_tree(user_id)
-        
-        if success:
-            # Обновляем сообщение
-            tree_data = update_tree_stats(user_id)
-            mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
-            
-            water_percent = int((tree_data["water_level"] / TREE_CONFIG["max_water"]) * 100)
-            fruit_percent = int((tree_data["fruits"] / TREE_CONFIG["max_fruits"]) * 100)
-            
-            water_bar = "█" * (water_percent // 10) + "░" * (10 - (water_percent // 10))
-            fruit_bar = "█" * (fruit_percent // 10) + "░" * (10 - (fruit_percent // 10))
-            
-            cooldown_info = "💧 Дерево полито! Теперь нужно подождать 1 час до следующего полива."
-            
-            text = (
-                f"🌳 <b>ДЕРЕВО ЖИЗНИ</b> 🌳\n\n"
-                f"👤 Владелец: {mention}\n\n"
-                f"💧 <b>Влага:</b> {tree_data['water_level']}/{TREE_CONFIG['max_water']}\n"
-                f"<code>[{water_bar}]</code> {water_percent}%\n\n"
-                f"🍎 <b>Плоды:</b> {tree_data['fruits']}/{TREE_CONFIG['max_fruits']}\n"
-                f"<code>[{fruit_bar}]</code> {fruit_percent}%\n\n"
-                f"📊 <b>Статистика:</b>\n"
-                f"• Всего собрано плодов: {tree_data['total_fruits_harvested']}\n"
-                f"• Потрачено на полив: {format_number(tree_data['total_water_spent'])}$\n"
-                f"• Цена плода: {format_number(TREE_CONFIG['fruit_base_price'])}$\n\n"
-                f"{cooldown_info}"
-            )
-            
-            kb = InlineKeyboardMarkup(row_width=2)
-            kb.add(
-                InlineKeyboardButton("💧 Полить", callback_data=f"tree_water_{user_id}"),
-                InlineKeyboardButton("🍎 Собрать плоды", callback_data=f"tree_harvest_{user_id}")
-            )
-            
-            try:
+
+        # Проверка существования игры
+        if game_id not in active_candy_games:
+            bot.answer_callback_query(call.id, "❌ Игра не найдена!", show_alert=True)
+            return
+
+        game = active_candy_games[game_id]
+        user_id = game["user_id"]
+        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
+
+        # Проверка, активна ли игра
+        if not game["active"]:
+            bot.answer_callback_query(call.id, "❌ Игра уже завершена!")
+            return
+
+        # Проверка, не открыта ли уже клетка
+        if cell in game["opened_cells"]:
+            bot.answer_callback_query(call.id, "❌ Эта клетка уже открыта!")
+            return
+
+        # Открываем клетку
+        game["opened_cells"].append(cell)
+
+        # Проверяем, есть ли в клетке конфета
+        if cell in game["candy_positions"]:
+            # Нашли конфету!
+            game["candies_found"] += 1
+            game["current_multiplier"] = round(1.0 + (game["candies_found"] * CANDY_MULTIPLIER_PER_CANDY), 2)
+
+            # Проверяем, все ли конфеты найдены
+            if game["candies_found"] >= CANDY_COUNT:
+                # Найдены все конфеты - автоматический выигрыш
+                win_amount = int(game["bet"] * game["current_multiplier"])
+                user_data = get_user_data(user_id)
+                user_data["balance"] += win_amount
+                save_casino_data()
+
+                text = (f"{mention}, 🎉 <b>ТЫ НАШЁЛ ВСЕ КОНФЕТЫ!</b>\n\n"
+                        f"💰 Выигрыш: <code>{format_number(win_amount)}$</code>\n"
+                        f"📈 Множитель: <b>x{game['current_multiplier']:.2f}</b>\n"
+                        f"🍬 Найдено конфет: <code>{game['candies_found']}</code>\n\n"
+                        f"{format_candy_board(game['opened_cells'], game['candy_positions'])}")
+
+                game["active"] = False
                 bot.edit_message_text(
                     text,
-                    call.message.chat.id,
-                    call.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=kb
+                    game["chat_id"],
+                    game["message_id"],
+                    parse_mode="HTML"
                 )
-            except:
-                pass
-            
-            bot.answer_callback_query(call.id, f"✅ {message_text}")
+                del active_candy_games[game_id]
+                bot.answer_callback_query(call.id, "🎉 Ты выиграл!")
+                return
+
+            # Не все конфеты найдены - показываем сообщение о находке
+            show_cashout = True  # После первой конфеты появляется кнопка
+            text = (f"{mention}, 🍬 <b>Ты нашёл конфету!</b>\n\n"
+                    f"<b>Ставка:</b> <code>{format_number(game['bet'])}$</code>\n"
+                    f"<b>Текущий множитель:</b> <b>x{game['current_multiplier']:.2f}</b>\n"
+                    f"<b>Найдено конфет:</b> <code>{game['candies_found']}/{CANDY_COUNT}</code>\n\n"
+                    f"Продолжай искать или забирай выигрыш!\n\n"
+                    f"{format_candy_board(game['opened_cells'], game['candy_positions'])}")
+
         else:
-            bot.answer_callback_query(call.id, f"❌ {message_text}", show_alert=True)
-            
-    except Exception as e:
-        logger.error(f"Ошибка полива дерева: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка при поливе!", show_alert=True)
+            # Пустая клетка - проигрыш
+            text = (f"{mention}, 😢 <b>Тут, к сожалению, не было конфет...</b>\n\n"
+                    f"💸 Ты потерял ставку: <code>{format_number(game['bet'])}$</code>\n\n"
+                    f"{format_candy_board(game['opened_cells'], game['candy_positions'])}")
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("tree_harvest_"))
-def tree_harvest_callback(call):
-    """Обработчик сбора плодов"""
-    try:
-        user_id = int(call.data.split("_")[2])
-        
-        # Проверка владельца кнопки
-        if call.from_user.id != user_id:
-            bot.answer_callback_query(call.id, "❌ Это не твоё дерево!", show_alert=True)
+            game["active"] = False
+            bot.edit_message_text(
+                text,
+                game["chat_id"],
+                game["message_id"],
+                parse_mode="HTML"
+            )
+            del active_candy_games[game_id]
+            bot.answer_callback_query(call.id, "❌ Ты проиграл!")
             return
-        
-        # Собираем плоды
-        success, message_text = harvest_fruits(user_id)
-        
-        if success:
-            # Обновляем сообщение
-            tree_data = update_tree_stats(user_id)
-            user_data = get_user_data(user_id)
-            mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
-            
-            water_percent = int((tree_data["water_level"] / TREE_CONFIG["max_water"]) * 100)
-            fruit_percent = int((tree_data["fruits"] / TREE_CONFIG["max_fruits"]) * 100)
-            
-            water_bar = "█" * (water_percent // 10) + "░" * (10 - (water_percent // 10))
-            fruit_bar = "█" * (fruit_percent // 10) + "░" * (10 - (fruit_percent // 10))
-            
-            # Проверка кулдауна
-            cooldown_info = ""
-            if tree_data["last_water"]:
-                last_water = datetime.fromisoformat(tree_data["last_water"])
-                hours_since = (datetime.now() - last_water).total_seconds() / 3600
-                if hours_since < TREE_CONFIG["cooldown_hours"]:
-                    remaining = int((TREE_CONFIG["cooldown_hours"] - hours_since) * 60)
-                    cooldown_info = f"⏳ Полив будет доступен через {remaining} мин."
-                else:
-                    cooldown_info = "💧 Можно поливать!"
-            
-            text = (
-                f"🌳 <b>ДЕРЕВО ЖИЗНИ</b> 🌳\n\n"
-                f"👤 Владелец: {mention}\n\n"
-                f"💧 <b>Влага:</b> {tree_data['water_level']}/{TREE_CONFIG['max_water']}\n"
-                f"<code>[{water_bar}]</code> {water_percent}%\n\n"
-                f"🍎 <b>Плоды:</b> {tree_data['fruits']}/{TREE_CONFIG['max_fruits']}\n"
-                f"<code>[{fruit_bar}]</code> {fruit_percent}%\n\n"
-                f"📊 <b>Статистика:</b>\n"
-                f"• Всего собрано плодов: {tree_data['total_fruits_harvested']}\n"
-                f"• Потрачено на полив: {format_number(tree_data['total_water_spent'])}$\n"
-                f"• Цена плода: {format_number(TREE_CONFIG['fruit_base_price'])}$\n\n"
-                f"💰 <b>Текущий баланс:</b> {format_number(user_data['balance'])}$\n"
-                f"{cooldown_info}"
-            )
-            
-            kb = InlineKeyboardMarkup(row_width=2)
-            kb.add(
-                InlineKeyboardButton("💧 Полить", callback_data=f"tree_water_{user_id}"),
-                InlineKeyboardButton("🍎 Собрать плоды", callback_data=f"tree_harvest_{user_id}")
-            )
-            
-            try:
-                bot.edit_message_text(
-                    text,
-                    call.message.chat.id,
-                    call.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=kb
-                )
-            except:
-                pass
-            
-            bot.answer_callback_query(call.id, f"✅ {message_text}")
-        else:
-            bot.answer_callback_query(call.id, f"❌ {message_text}", show_alert=True)
-            
+
+        # Обновляем сообщение
+        show_cashout = game["candies_found"] > 0
+        bot.edit_message_text(
+            text,
+            game["chat_id"],
+            game["message_id"],
+            parse_mode="HTML",
+            reply_markup=candy_keyboard(game_id, user_id, game["opened_cells"], show_cashout)
+        )
+
+        bot.answer_callback_query(call.id, f"✅ Клетка открыта!")
+
     except Exception as e:
-        logger.error(f"Ошибка сбора плодов: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка при сборе!", show_alert=True)
+        logger.error(f"Ошибка в игре Конфетка (открытие): {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
 
-# ================== 🌳 АДМИН КОМАНДЫ ДЛЯ ДЕРЕВА ==================
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("дерево"))
-def admin_tree_commands(message):
-    """Админ команды для дерева жизни"""
-    user_id = message.from_user.id
-    
-    # Проверка прав администратора
-    if user_id not in ADMIN_IDS:
-        return
-    
+@bot.callback_query_handler(func=lambda c: c.data.startswith("candy_cashout_"))
+def candy_cashout(call):
+    """Обработчик кнопки 'Забрать выигрыш'"""
     try:
-        parts = message.text.lower().split()
-        
-        if len(parts) < 3:
-            bot.reply_to(message,
-                "❌ <b>Админ команды дерева:</b>\n\n"
-                "• <code>дерево дать [ID] [уровень влаги] [плоды]</code>\n"
-                "• <code>дерево взять [ID]</code>\n"
-                "• <code>дерево статистика [ID]</code>",
-                parse_mode="HTML"
-            )
-            return
-        
-        cmd = parts[1]
-        
-        if cmd == "дать":
-            target_id = int(parts[2])
-            water = int(parts[3]) if len(parts) > 3 else 50
-            fruits = int(parts[4]) if len(parts) > 4 else 0
-            
-            tree_data = get_user_tree(target_id)
-            tree_data["water_level"] = min(water, TREE_CONFIG["max_water"])
-            tree_data["fruits"] = min(fruits, TREE_CONFIG["max_fruits"])
-            tree_data["last_update"] = datetime.now().isoformat()
-            
-            update_user_tree(target_id, tree_data)
-            
-            target_user = bot.get_chat(target_id)
-            admin_mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-            target_mention = f'<a href="tg://user?id={target_id}">{target_user.first_name}</a>'
-            
-            bot.reply_to(message,
-                f"✅ {admin_mention} выдал дерево:\n"
-                f"• Пользователь: {target_mention}\n"
-                f"• Влага: {water}\n"
-                f"• Плоды: {fruits}",
-                parse_mode="HTML"
-            )
-            
-        elif cmd == "взять":
-            target_id = int(parts[2])
-            
-            conn = sqlite3.connect(TREE_DB)
-            c = conn.cursor()
-            c.execute("DELETE FROM user_trees WHERE user_id = ?", (target_id,))
-            conn.commit()
-            conn.close()
-            
-            target_user = bot.get_chat(target_id)
-            admin_mention = f'<a href="tg://user?id={user_id}">{message.from_user.first_name}</a>'
-            target_mention = f'<a href="tg://user?id={target_id}">{target_user.first_name}</a>'
-            
-            bot.reply_to(message,
-                f"✅ {admin_mention} удалил дерево у {target_mention}",
-                parse_mode="HTML"
-            )
-            
-        elif cmd == "статистика":
-            target_id = int(parts[2])
-            tree_data = get_user_tree(target_id)
-            target_user = bot.get_chat(target_id)
-            
-            text = (
-                f"📊 <b>Статистика дерева:</b>\n\n"
-                f"👤 Пользователь: <a href='tg://user?id={target_id}'>{target_user.first_name}</a>\n"
-                f"💧 Влага: {tree_data['water_level']}/{TREE_CONFIG['max_water']}\n"
-                f"🍎 Плоды: {tree_data['fruits']}/{TREE_CONFIG['max_fruits']}\n"
-                f"📅 Последний полив: {tree_data['last_water']}\n"
-                f"📅 Последнее обновление: {tree_data['last_update']}\n"
-                f"📦 Всего собрано: {tree_data['total_fruits_harvested']}\n"
-                f"💰 Потрачено на полив: {format_number(tree_data['total_water_spent'])}$"
-            )
-            
-            bot.reply_to(message, text, parse_mode="HTML")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {e}")
-        logger.error(f"Ошибка в админ командах дерева: {e}")
+        parts = call.data.split("_")
+        game_id = parts[2]
+        owner_id = int(parts[3])
 
-print("✅ Система Дерево жизни загружена и готова к работе! 🌳")
+        # Проверка владельца
+        if not check_candy_owner(call, owner_id):
+            return
+
+        # Проверка существования игры
+        if game_id not in active_candy_games:
+            bot.answer_callback_query(call.id, "❌ Игра не найдена!", show_alert=True)
+            return
+
+        game = active_candy_games[game_id]
+        user_id = game["user_id"]
+        mention = f'<a href="tg://user?id={user_id}">{call.from_user.first_name}</a>'
+
+        # Проверка, активна ли игра
+        if not game["active"]:
+            bot.answer_callback_query(call.id, "❌ Игра уже завершена!")
+            return
+
+        # Проверка, есть ли что забирать (должна быть найдена хотя бы одна конфета)
+        if game["candies_found"] == 0:
+            bot.answer_callback_query(call.id, "❌ Сначала найди хотя бы одну конфету!")
+            return
+
+        # Рассчитываем выигрыш
+        win_amount = int(game["bet"] * game["current_multiplier"])
+        user_data = get_user_data(user_id)
+        user_data["balance"] += win_amount
+        save_casino_data()
+
+        # Формируем правильное окончание для слова "конфет"
+        candy_word = "конфету" if game["candies_found"] == 1 else "конфет"
+
+        text = (f"{mention}, ✅ <b>Ты успешно забрал выигрыш!</b>\n\n"
+                f"💰 Выигрыш: <code>{format_number(win_amount)}$</code>\n"
+                f"📈 Множитель: <b>x{game['current_multiplier']:.2f}</b>\n"
+                f"🍬 Нашёл <code>{game['candies_found']}</code> {candy_word}\n\n"
+                f"{format_candy_board(game['opened_cells'], game['candy_positions'])}")
+
+        game["active"] = False
+        bot.edit_message_text(
+            text,
+            game["chat_id"],
+            game["message_id"],
+            parse_mode="HTML"
+        )
+
+        del active_candy_games[game_id]
+        bot.answer_callback_query(call.id, f"✅ +{format_number(win_amount)}$")
+
+    except Exception as e:
+        logger.error(f"Ошибка в игре Конфетка (выигрыш): {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка!", show_alert=True)
+
+print("✅ Игра 'Конфетка' (6 клеток, 3 конфеты) успешно загружена! 🍬")
     
     # ================== 💣 ИГРА "ОБЕЗВРЕДЬ БОМБУ" ==================
 
@@ -12701,6 +12572,7 @@ HELP_CONTENT = {
 
 [🃏] <b>играть [ставка]</b>
 [🎰] <b>слот [ставка]</b>
+[🍬] <b>конфетка [ставка]</b>
 [🍹] <b>бомба [ставка]</b>
 [☁️] <b>лестница [ставка]</b>
 [🐿️] <b>белка [ставка]</b>
