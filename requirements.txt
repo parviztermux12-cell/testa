@@ -1,28 +1,17 @@
-# Основные библиотеки
 pytelegrambotapi==4.16.1
 pillow==10.2.0
 opencv-python==4.9.0.80
 numpy==1.26.4
-
-# Для работы с видео
 moviepy==1.0.3
 ffmpeg-python==0.2.0
-
-# Для Real-ESRGAN (если будешь использовать)
 torch==2.2.0
 torchvision==0.17.0
 basicsr==1.4.2
 facexlib==0.3.0
 gfpgan==1.3.8
-
-# Для Video2X
 yaml==6.0.1
 tqdm==4.66.2
-
-# Для работы с сетью
 requests==2.31.0
 urllib3==2.2.1
-
-# Дополнительно
 scipy==1.12.0
 imageio==2.34.0
