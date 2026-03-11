@@ -1,9 +1,3 @@
 pyTelegramBotAPI==4.12.0
-torch==2.1.0
-torchvision==0.16.0
-diffusers==0.24.0
-transformers==4.35.0
-accelerate==0.24.1
-safetensors==0.4.0
-pillow==10.1.0
-xformers==0.0.22.post7  # для ускорения на GPU
+requests==2.31.0
+Pillow==10.1.0
