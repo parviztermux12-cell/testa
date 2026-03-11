@@ -14,7 +14,7 @@ from PIL import Image
 import gc
 
 # ========== КОНФИГУРАЦИЯ ==========
-TOKEN = '8259575977:AAHwfVOSF058L-bMan1l6NanOZUNsPrw7D0'  # Твой токен
+TOKEN = '8259575977:AAGBvgNlwpcQV7s3qer3tHqJb-Ajvos4qTQ'  # Твой токен
 bot = telebot.TeleBot(TOKEN)
 
 # Глобальная переменная для модели
