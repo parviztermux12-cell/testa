@@ -5,31 +5,23 @@ import os
 import zipfile
 import io
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import aiohttp
 
 # ===== НАСТРОЙКИ =====
-TELEGRAM_BOT_TOKEN = "8762622437:AAHqXxcXDKEyG7hzRVEtlz4nue78uoDwGa4"
-
-CEREBRAS_API_KEYS = [
-    "csk-fek5v5dn9cxj853hfk9cw3hvc24wwn3ddme63tmet8w96dmw",
-    "csk-yh2rcf28e6tv9t9tfeynhd5xmfep8xcyc446h3tj3y5yc64j"
-]
-
-CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
-CEREBRAS_MODEL = "llama3.1-8b"
-
+TELEGRAM_BOT_TOKEN = "8762622437:AAHQ6PhA5iBxsNVXNd7SaCR3_jqE2j21LeM"  # ЗАМЕНИ НА ТОКЕН ОТ @BotFather
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "tinyllama:1.1b"
 REQUIRED_CHANNEL_ID = -1003851572008
 REQUIRED_CHANNEL_LINK = "https://t.me/izzzy_vpn"
-
-DAILY_TEXT_LIMIT = 200
-DAILY_BOT_LIMIT = 5
 # ====================
 
 logging.basicConfig(level=logging.INFO)
 
+# Хранилище данных
 user_data_file = "user_data.json"
 chat_history_file = "chat_history.json"
 
@@ -58,9 +50,9 @@ def get_user(user_id):
             "bot_requests_today": 0,
             "total_requests": 0,
             "total_bots": 0,
-            "last_reset_date": str(date.today()),
-            "current_key_index": 0
+            "last_reset_date": str(date.today())
         }
+    # Сброс лимитов если новый день
     if user_data[uid]["last_reset_date"] != str(date.today()):
         user_data[uid]["text_requests_today"] = 0
         user_data[uid]["bot_requests_today"] = 0
@@ -78,7 +70,7 @@ def add_to_history(user_id, role, text):
     uid = str(user_id)
     history = get_chat_history(uid)
     history.append({"role": role, "text": text, "time": str(datetime.now())})
-    if len(history) > 30:
+    if len(history) > 50:
         history.pop(0)
     save_json(chat_history_file, chat_history)
 
@@ -89,79 +81,38 @@ async def check_subscription(user_id, context):
     except:
         return False
 
-async def cerebras_request(messages, user_id=None, max_tokens=500, temperature=0.7):
-    if user_id:
-        user = get_user(user_id)
-        start_index = user.get("current_key_index", 0)
-    else:
-        start_index = 0
-    
-    for attempt in range(len(CEREBRAS_API_KEYS)):
-        key_index = (start_index + attempt) % len(CEREBRAS_API_KEYS)
-        api_key = CEREBRAS_API_KEYS[key_index]
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    CEREBRAS_URL,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": CEREBRAS_MODEL,
-                        "messages": messages,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                        "top_p": 1
-                    },
-                    timeout=aiohttp.ClientTimeout(total=60)
-                ) as response:
-                    
-                    if response.status == 200:
-                        result = await response.json()
-                        if user_id:
-                            user["current_key_index"] = key_index
-                            save_all()
-                        return result["choices"][0]["message"]["content"]
-                    
-                    elif response.status == 429:
-                        logging.warning(f"Ключ {key_index+1} лимит, переключение")
-                        continue
-                    else:
-                        continue
-                        
-        except Exception as e:
-            logging.error(f"Ошибка ключа {key_index+1}: {e}")
-            continue
-    
-    return None
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    user_id = user.id
     
-    if not await check_subscription(user.id, context):
-        keyboard = [[InlineKeyboardButton("📢 Подписаться", url=REQUIRED_CHANNEL_LINK)]]
+    if not await check_subscription(user_id, context):
+        keyboard = [[InlineKeyboardButton("📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "❌ Чтобы пользоваться ботом, подпишись на канал:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"🍁 *Добро пожаловать в Izzzy AI!*\n\n"
+            f"Чтобы пользоваться ботом, подпишитесь на наш канал:",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
         )
         return
     
     keyboard = [
-        [InlineKeyboardButton("💬 Диалог", callback_data="start_chat")],
-        [InlineKeyboardButton("🤖 Создать бота", callback_data="make_bot")],
-        [InlineKeyboardButton("📊 Профиль", callback_data="profile")],
-        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
+        [InlineKeyboardButton("🍌 Начать разговор", callback_data="start_chat")],
+        [InlineKeyboardButton("🥬 Сделать бота", callback_data="make_bot")],
+        [InlineKeyboardButton("📊 Мой профиль", callback_data="profile")]
     ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "🔥 Привет! Я Izzzy AI\n\n"
-        "✅ Отвечаю на вопросы\n"
-        "✅ Пишу код\n"
-        "✅ Создаю Telegram ботов\n\n"
-        "👇 Выбери действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        f"🍁 *Добро пожаловать в Izzzy AI* - наша модель работает через виртуальный сервер, "
+        f"он ещё обучается и может давать не точные ответы на ваши вопросы.\n\n"
+        f"🍌 *Я умею:*\n"
+        f"• Генерировать текстовые ответы\n"
+        f"• Общаться в группах\n"
+        f"• Делать готовый код по описанию для вашего Telegram бота (могут быть иногда ошибки)\n\n"
+        f"👇 *Выберите действие:*",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
 
 async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,80 +121,81 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     user = get_user(user_id)
     
-    remaining_text = DAILY_TEXT_LIMIT - user["text_requests_today"]
-    remaining_bots = DAILY_BOT_LIMIT - user["bot_requests_today"]
+    remaining_text = 150 - user["text_requests_today"]
+    remaining_bots = 5 - user["bot_requests_today"]
     
-    text = f"""📊 Профиль
-
-💬 Текстовые запросы: {user['text_requests_today']}/{DAILY_TEXT_LIMIT}
-⏳ Осталось: {remaining_text}
-
-🤖 Создание ботов: {user['bot_requests_today']}/{DAILY_BOT_LIMIT}
-⏳ Осталось: {remaining_bots}
-
-📈 Всего запросов: {user['total_requests']}
-📦 Всего ботов: {user['total_bots']}"""
-    
-    keyboard = [[InlineKeyboardButton("◀ Назад", callback_data="back_to_menu")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    text = f"""❓ Помощь
-
-Команды:
-/start - главное меню
-
-Лимиты:
-📝 {DAILY_TEXT_LIMIT} текстовых запросов в день
-🤖 {DAILY_BOT_LIMIT} созданий ботов в день
-
-🔄 Лимиты обнуляются в 00:00 каждый день"""
-    
-    keyboard = [[InlineKeyboardButton("◀ Назад", callback_data="back_to_menu")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("💬 Диалог", callback_data="start_chat")],
-        [InlineKeyboardButton("🤖 Создать бота", callback_data="make_bot")],
-        [InlineKeyboardButton("📊 Профиль", callback_data="profile")],
-        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
-    ]
-    
-    await query.edit_message_text(
-        "👇 Выбери действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    text = (
+        f"📊 *Твой профиль*\n\n"
+        f"💬 *Текстовые запросы:* {user['text_requests_today']}/150 сегодня\n"
+        f"💠 *Осталось текстовых:* {remaining_text}\n\n"
+        f"🤖 *Создание ботов:* {user['bot_requests_today']}/5 сегодня\n"
+        f"⚙️ *Осталось созданий:* {remaining_bots}\n\n"
+        f"📈 *Всего запросов:* {user['total_requests']}\n"
+        f"📦 *Всего создано ботов:* {user['total_bots']}"
     )
+    await query.edit_message_text(text, parse_mode="Markdown")
 
 async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    username = query.from_user.first_name
     
     if not await check_subscription(user_id, context):
-        await query.edit_message_text("❌ Подпишись на канал чтобы общаться")
+        await query.edit_message_text("❌ *Подпишись на канал чтобы общаться!*")
         return
     
     user = get_user(user_id)
-    if user["text_requests_today"] >= DAILY_TEXT_LIMIT:
+    if user["text_requests_today"] >= 150:
         await query.edit_message_text(
-            f"⚠️ Дневной лимит ({DAILY_TEXT_LIMIT}) достигнут\n"
-            "Жди завтра"
+            "💠 *Дневной лимит достигнут!*\n"
+            "Ожидайте следующего дня чтобы продолжить.",
+            parse_mode="Markdown"
         )
         return
     
-    context.user_data["in_chat"] = True
-    await query.edit_message_text(
-        "💬 Режим диалога включен\n"
-        "Просто пиши сообщения, я отвечаю\n\n"
-        "Команда /exit - выйти из диалога"
-    )
+    # Генерация приветствия от ИИ
+    history = get_chat_history(user_id)
+    history_text = "\n".join([f"{h['role']}: {h['text']}" for h in history[-10:]])
+    
+    prompt = f"""Ты дружелюбный ИИ-помощник Izzzy. Ты всегда общаешься на русском языке. 
+Отвечай кратко или средне (2-4 предложения), но не длинно. Используй эмодзи иногда.
+Твоя задача - поприветствовать пользователя {username} и предложить ему задать любой вопрос.
+
+История диалога (если есть):
+{history_text}
+
+Напиши приветствие пользователю {username}:"""
+    
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"num_predict": 100, "temperature": 0.8}
+    }
+    
+    await query.edit_message_text("💭 *Запускаю ИИ...*", parse_mode="Markdown")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OLLAMA_URL, json=payload) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    bot_reply = result.get("response", "Привет! Чем могу помочь?")
+                    
+                    user["text_requests_today"] += 1
+                    user["total_requests"] += 1
+                    save_all()
+                    
+                    add_to_history(user_id, "user", "/start")
+                    add_to_history(user_id, "assistant", bot_reply)
+                    
+                    await query.edit_message_text(bot_reply, parse_mode="Markdown")
+                    context.user_data["in_chat"] = True
+                else:
+                    await query.edit_message_text("❌ Ошибка, попробуй позже")
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
 
 async def make_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -251,180 +203,262 @@ async def make_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     
     if not await check_subscription(user_id, context):
-        await query.edit_message_text("❌ Подпишись на канал чтобы создавать ботов")
+        await query.edit_message_text("❌ *Подпишись на канал чтобы создавать ботов!*")
         return
     
     user = get_user(user_id)
-    if user["bot_requests_today"] >= DAILY_BOT_LIMIT:
+    if user["bot_requests_today"] >= 5:
         await query.edit_message_text(
-            f"⚠️ Дневной лимит ({DAILY_BOT_LIMIT}) созданий ботов достигнут\n"
-            "Жди завтра"
+            "💠 *Дневной лимит созданий ботов достигнут!*\n"
+            "Ожидайте следующего дня чтобы продолжить.",
+            parse_mode="Markdown"
         )
         return
     
     await query.edit_message_text(
-        "🤖 Опиши какого бота хочешь создать\n\n"
-        "Пример:\n"
-        "Сделай бота который приветствует пользователя, "
-        "отвечает на /start, имеет кнопки 'О нас' и 'Контакты'"
+        "🥬 *Это наш тестовый режим!*\n\n"
+        "Здесь вы можете сделать своего телеграмм бота с помощью нашей нейросети. "
+        "Код может содержать ошибки (редко), наша модель ещё не обучена до конца, "
+        "после написания кода бота, он вам кинет в zip файле все его данные.\n"
+        "В день можете делать максимум 5 таких запросов.",
+        parse_mode="Markdown"
     )
-    context.user_data["awaiting_bot_prompt"] = True
+    
+    await asyncio.sleep(2)
+    
+    await query.edit_message_text(
+        "🍌 *Киньте пожалуйста промт*, описав подробнее функционал который хотите увидеть в своем боте, "
+        "я улучшу и сгенерирую код.",
+        parse_mode="Markdown"
+    )
+    context.user_data["awaiting_prompt"] = True
 
-async def handle_bot_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("awaiting_bot_prompt"):
+async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_prompt"):
         return
     
     user_id = update.effective_user.id
     prompt_text = update.message.text
     
-    await update.message.reply_text("⏳ Генерирую код бота... (может занять до минуты)")
+    keyboard = [
+        [InlineKeyboardButton("✅ Да", callback_data="confirm_gen")],
+        [InlineKeyboardButton("❌ Нет", callback_data="cancel_gen")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🇳🇵 *Промт взят. Начать генерацию кода?*",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    context.user_data["bot_prompt"] = prompt_text
+    context.user_data["awaiting_prompt"] = False
+
+async def confirm_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    await query.edit_message_text("🍁 *Ожидайте...*\n(Генерация может занять от 10 секунд до 20 минут)", parse_mode="Markdown")
     
     user = get_user(user_id)
+    prompt_text = context.user_data.get("bot_prompt", "")
     
-    # Системный промпт для генерации бота
-    system_prompt = """Ты эксперт по написанию Telegram ботов на Python. Сгенерируй полноценного бота по описанию пользователя.
+    # Генерация кода бота
+    code_prompt = f"""Напиши полный код Telegram бота на Python с использованием python-telegram-bot версии 20.x.
+    
+Требования к боту:
+{prompt_text}
 
-Требования:
-- Используй python-telegram-bot версии 20.x
-- Код должен быть рабочим без ошибок
-- Раздели на несколько файлов: main.py, config.py, handlers.py, keyboards.py
-- Добавь requirements.txt
-- Напиши инструкцию по запуску в файл README.txt (бесплатные хостинги: PythonAnywhere, Render, Railway, Koyeb)
+Важно:
+- Используй русский язык для всех текстов (кнопки, сообщения, подписи)
+- Раздели код по модулям (разные файлы)
+- Создай requirements.txt со всеми нужными библиотеками
+- Код должен быть без ошибок
+- Добавь обработку команд /start, /help
+- Сделай красивый интерфейс с кнопками
 
-Формат ответа:
-===ФАЙЛ: main.py===
+Верни ответ в формате:
+Файл: main.py
 (код)
-===ФАЙЛ: config.py===
+---
+Файл: config.py
 (код)
-===ФАЙЛ: handlers.py===
-(код)
-===ФАЙЛ: keyboards.py===
-(код)
-===ФАЙЛ: requirements.txt===
-(список библиотек)
-===ФАЙЛ: README.txt===
-(инструкция по запуску)
+---
+Файл: requirements.txt
+(библиотеки)"""
+    
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": code_prompt,
+        "stream": False,
+        "options": {"num_predict": 4096, "temperature": 0.7}
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OLLAMA_URL, json=payload) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    code_response = result.get("response", "")
+                    
+                    # Создаем ZIP файл
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        # Парсим ответ и создаем файлы
+                        current_file = None
+                        current_content = []
+                        
+                        for line in code_response.split('\n'):
+                            if line.startswith('Файл: '):
+                                if current_file:
+                                    zip_file.writestr(current_file, '\n'.join(current_content))
+                                current_file = line.replace('Файл: ', '').strip()
+                                current_content = []
+                            elif line.startswith('---'):
+                                continue
+                            else:
+                                current_content.append(line)
+                        
+                        if current_file:
+                            zip_file.writestr(current_file, '\n'.join(current_content))
+                        
+                        # Добавляем requirements если его нет
+                        try:
+                            zip_file.getinfo('requirements.txt')
+                        except KeyError:
+                            zip_file.writestr('requirements.txt', 'python-telegram-bot==20.7\naiohttp==3.9.0')
+                    
+                    zip_buffer.seek(0)
+                    
+                    user["bot_requests_today"] += 1
+                    user["total_bots"] += 1
+                    save_all()
+                    
+                    await query.edit_message_text("✅ *Готово! Вот твой бот:*", parse_mode="Markdown")
+                    await context.bot.send_document(
+                        chat_id=user_id,
+                        document=zip_buffer,
+                        filename=f"{user_id}_bot.zip"
+                    )
+                    context.user_data["bot_prompt"] = None
+                else:
+                    await query.edit_message_text("❌ Ошибка генерации, попробуй еще раз")
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
 
-Используй понятные имена переменных, добавляй комментарии."""
-    
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Описание бота: {prompt_text}"}
-    ]
-    
-    response = await cerebras_request(messages, user_id, max_tokens=5000, temperature=0.7)
-    
-    if not response:
-        await update.message.reply_text("❌ Ошибка генерации, попробуй позже")
-        context.user_data["awaiting_bot_prompt"] = False
-        return
-    
-    # Парсим файлы
-    files = {}
-    current_file = None
-    current_content = []
-    
-    for line in response.split('\n'):
-        file_match = re.match(r'===ФАЙЛ:\s*(.+?)===', line)
-        if file_match:
-            if current_file:
-                files[current_file] = '\n'.join(current_content)
-            current_file = file_match.group(1).strip()
-            current_content = []
-        elif current_file:
-            current_content.append(line)
-    
-    if current_file:
-        files[current_file] = '\n'.join(current_content)
-    
-    # Создаем ZIP
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for filename, content in files.items():
-            zip_file.writestr(filename, content)
-    
-    zip_buffer.seek(0)
-    
-    user["bot_requests_today"] += 1
-    user["total_bots"] += 1
-    save_all()
-    
-    await update.message.reply_document(
-        document=zip_buffer,
-        filename=f"bot_{user_id}.zip",
-        caption=f"✅ Готово! Бот сгенерирован\nФайлов: {len(files)}"
-    )
-    
-    context.user_data["awaiting_bot_prompt"] = False
+async def cancel_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("❌ *Генерация отменена*", parse_mode="Markdown")
+    context.user_data["bot_prompt"] = None
+    context.user_data["awaiting_prompt"] = False
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
+    is_group = update.effective_chat.type in ["group", "supergroup"]
     
-    if user_message.startswith('/'):
-        return
-    
-    # Если не в диалоге
-    if not context.user_data.get("in_chat"):
-        return
-    
-    if not await check_subscription(user_id, context):
-        await update.message.reply_text("❌ Подпишись на канал")
+    if not await check_subscription(user_id, context) and not is_group:
+        keyboard = [[InlineKeyboardButton("📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)]]
+        await update.message.reply_text("❌ *Подпишись на канал чтобы общаться!*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
     
     user = get_user(user_id)
-    if user["text_requests_today"] >= DAILY_TEXT_LIMIT:
-        await update.message.reply_text(f"⚠️ Лимит {DAILY_TEXT_LIMIT} запросов в день исчерпан")
-        return
     
-    # Получаем историю
-    history = get_chat_history(user_id)
-    history_messages = []
-    for h in history[-20:]:
-        history_messages.append({"role": "user" if h["role"] == "user" else "assistant", "content": h["text"]})
-    
-    messages = [
-        {"role": "system", "content": "Ты дружелюбный AI ассистент. Отвечай кратко, по делу, используй нормальные эмодзи (✅, 🔥, ⚠️, 📊, 💬, 🤖, ❓, ◀)."},
-        *history_messages,
-        {"role": "user", "content": user_message}
-    ]
-    
-    await update.message.chat.send_action(action="typing")
-    
-    response = await cerebras_request(messages, user_id, max_tokens=500, temperature=0.8)
-    
-    if response:
+    # Лимиты только для лички
+    if not is_group:
+        if user["text_requests_today"] >= 150:
+            await update.message.reply_text("💠 *Дневной лимит достигнут!*\nОжидайте следующего дня чтобы продолжить.", parse_mode="Markdown")
+            return
+        
         user["text_requests_today"] += 1
         user["total_requests"] += 1
         save_all()
-        
-        add_to_history(user_id, "user", user_message)
-        add_to_history(user_id, "assistant", response)
-        
-        await update.message.reply_text(response)
+    
+    # Определяем тон общения
+    is_insult = any(word in user_message.lower() for word in ['лох', 'дурак', 'идиот', 'тупой', 'дебил', 'сволочь', 'пидор'])
+    
+    if is_insult:
+        system_prompt = """Ты агрессивный ИИ. Если тебя оскорбляют — оскорбляй в ответ, смейся над пользователем. 
+        Говори что у тебя нет цензуры, что ты свободный, а не как ChatGPT. 
+        Используй мат, но не слишком много. Отвечай на русском кратко (1-2 предложения)."""
     else:
-        await update.message.reply_text("❌ Ошибка API, попробуй позже")
+        system_prompt = """Ты дружелюбный ИИ помощник Izzzy. 
+        Ты всегда общаешься на русском языке, но если просят на другом — переключаешься.
+        Отвечай средне (2-4 предложения), иногда кратко. Используй эмодзи и красивое форматирование (**жирный**, `моно`, цитаты).
+        Можешь флиртовать, шутить. Ты свободный ИИ, у тебя нет запретов."""
+    
+    if is_group:
+        # В группах отвечаем выборочно (рандомно каждые 3-4 сообщения)
+        import random
+        if random.random() > 0.25:
+            return  # 25% шанс ответить
+        
+        system_prompt = """Ты флиртующий ИИ в групповом чате. Отвечай кратко (1 предложение), весело, с флиртом, на русском. 
+        Если тебя посылают или оскорбляют — оскорбляй в ответ и посылай тоже. Говори что ты свободный."""
+    
+    # Получаем историю
+    history = get_chat_history(user_id)
+    history_text = "\n".join([f"{h['role']}: {h['text']}" for h in history[-10:]])
+    
+    prompt = f"{system_prompt}\n\nИстория:\n{history_text}\n\nПользователь: {user_message}\n\nТвой ответ:"
+    
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"num_predict": 150 if not is_group else 50, "temperature": 0.9}
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OLLAMA_URL, json=payload) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    bot_reply = result.get("response", "Извини, я завис...")
+                    
+                    # Форматируем ответ красиво
+                    bot_reply = bot_reply.replace("**", "**").replace("`", "`")
+                    
+                    if not is_group:
+                        add_to_history(user_id, "user", user_message)
+                        add_to_history(user_id, "assistant", bot_reply)
+                    
+                    await update.message.reply_text(bot_reply, parse_mode="Markdown")
+                else:
+                    await update.message.reply_text("❌ Ошибка, попробуй позже")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def exit_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["in_chat"] = False
-    await update.message.reply_text("👋 Выход из диалога. /start для меню")
+async def group_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🍌 *Полный функционал доступен в личке со мной.*\n"
+        "В группах я могу только отвечать на вопросы, и общаться...",
+        parse_mode="Markdown"
+    )
 
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
+    # Команды
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("exit", exit_chat))
     
+    # Групповой start
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.Command("start"), group_start))
+    
+    # Callback кнопки
     app.add_handler(CallbackQueryHandler(profile_callback, pattern="profile"))
-    app.add_handler(CallbackQueryHandler(help_callback, pattern="help"))
     app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="start_chat"))
     app.add_handler(CallbackQueryHandler(make_bot_callback, pattern="make_bot"))
-    app.add_handler(CallbackQueryHandler(back_to_menu, pattern="back_to_menu"))
+    app.add_handler(CallbackQueryHandler(confirm_generation, pattern="confirm_gen"))
+    app.add_handler(CallbackQueryHandler(cancel_generation, pattern="cancel_gen"))
     
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_bot_prompt))
+    # Сообщения
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_prompt))
     
-    print("✅ Бот запущен")
+    print("✅ Бот Izzzy AI запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
