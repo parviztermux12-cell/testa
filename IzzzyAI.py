@@ -1,531 +1,431 @@
 import asyncio
-import sqlite3
-import random
-import re
-from datetime import datetime
-from typing import Optional
-
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.enums import ParseMode, ChatType
-from aiogram.filters import Command, CommandStart
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, Message
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties
-
-# pip install g4f Pillow
-import g4f
-from PIL import Image
+import logging
+import json
+import os
+import zipfile
 import io
-import base64
+import re
+from datetime import datetime, date
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import aiohttp
 
-# ========== КОНФИГУРАЦИЯ ==========
-BOT_TOKEN = "8710524054:AAEW493gKKIRUCTcFF3yXeNiUxCW17qB-D4"
-CHANNEL_ID = -1003851572008
-CHANNEL_URL = "https://t.me/izzzy_vpn"
-DEV_USERNAME = "@parvizwp"
+# ===== НАСТРОЙКИ =====
+TELEGRAM_BOT_TOKEN = "8762622437:AAHqXxcXDKEyG7hzRVEtlz4nue78uoDwGa4"
 
-# ========== БАЗА ДАННЫХ ==========
-def init_db():
-    conn = sqlite3.connect("izzy_bot.db")
-    cur = conn.cursor()
-    
-    # Таблица пользователей
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Таблица запросов
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            request_type TEXT,
-            prompt TEXT,
-            result TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    """)
-    
-    # Таблица истории чатов (для контекста в группах)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            user_id INTEGER,
-            message TEXT,
-            role TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    conn.commit()
-    conn.close()
+CEREBRAS_API_KEYS = [
+    "csk-fek5v5dn9cxj853hfk9cw3hvc24wwn3ddme63tmet8w96dmw",
+    "csk-yh2rcf28e6tv9t9tfeynhd5xmfep8xcyc446h3tj3y5yc64j"
+]
 
-init_db()
+CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
+CEREBRAS_MODEL = "llama3.1-8b"
 
-def save_user(user_id: int, username: str = None, first_name: str = None, last_name: str = None):
-    conn = sqlite3.connect("izzy_bot.db")
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT OR REPLACE INTO users (user_id, username, first_name, last_name)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, username, first_name, last_name))
-    conn.commit()
-    conn.close()
+REQUIRED_CHANNEL_ID = -1003851572008
+REQUIRED_CHANNEL_LINK = "https://t.me/izzzy_vpn"
 
-def save_request(user_id: int, request_type: str, prompt: str, result: str = None):
-    conn = sqlite3.connect("izzy_bot.db")
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO requests (user_id, request_type, prompt, result)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, request_type, prompt, result))
-    conn.commit()
-    conn.close()
+DAILY_TEXT_LIMIT = 200
+DAILY_BOT_LIMIT = 5
+# ====================
 
-def get_user_requests(user_id: int, limit: int = 30):
-    conn = sqlite3.connect("izzy_bot.db")
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT request_type, prompt, created_at FROM requests
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-    """, (user_id, limit))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+logging.basicConfig(level=logging.INFO)
 
-def save_chat_message(chat_id: int, user_id: int, message: str, role: str = "user"):
-    conn = sqlite3.connect("izzy_bot.db")
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO chat_history (chat_id, user_id, message, role)
-        VALUES (?, ?, ?, ?)
-    """, (chat_id, user_id, message, role))
-    conn.commit()
-    conn.close()
+user_data_file = "user_data.json"
+chat_history_file = "chat_history.json"
 
-def get_chat_context(chat_id: int, limit: int = 10):
-    conn = sqlite3.connect("izzy_bot.db")
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, message, role FROM chat_history
-        WHERE chat_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-    """, (chat_id, limit))
-    rows = cur.fetchall()
-    conn.close()
-    return list(reversed(rows))
+def load_json(file):
+    if os.path.exists(file):
+        with open(file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
 
-# Счётчик сообщений для рандомных ответов бота в группах
-group_message_counter = {}
+def save_json(file, data):
+    with open(file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
-# ========== КЛАВИАТУРЫ ==========
-def get_main_keyboard():
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🎨 Генерировать картинку")],
-            [KeyboardButton(text="📄 Извлечь текст")],
-            [KeyboardButton(text="📋 Мои запросы")],
-        ],
-        resize_keyboard=True
-    )
-    return kb
+user_data = load_json(user_data_file)
+chat_history = load_json(chat_history_file)
 
-def get_channel_keyboard():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📢 Подписаться на канал", url=CHANNEL_URL)
-    kb.button(text="✅ Проверить подписку", callback_data="check_sub")
-    kb.adjust(1)
-    return kb.as_markup()
+def save_all():
+    save_json(user_data_file, user_data)
+    save_json(chat_history_file, chat_history)
 
-# ========== ПРОВЕРКА ПОДПИСКИ ==========
-async def check_subscription(bot: Bot, user_id: int) -> bool:
+def get_user(user_id):
+    uid = str(user_id)
+    if uid not in user_data:
+        user_data[uid] = {
+            "text_requests_today": 0,
+            "bot_requests_today": 0,
+            "total_requests": 0,
+            "total_bots": 0,
+            "last_reset_date": str(date.today()),
+            "current_key_index": 0
+        }
+    if user_data[uid]["last_reset_date"] != str(date.today()):
+        user_data[uid]["text_requests_today"] = 0
+        user_data[uid]["bot_requests_today"] = 0
+        user_data[uid]["last_reset_date"] = str(date.today())
+        save_all()
+    return user_data[uid]
+
+def get_chat_history(user_id):
+    uid = str(user_id)
+    if uid not in chat_history:
+        chat_history[uid] = []
+    return chat_history[uid]
+
+def add_to_history(user_id, role, text):
+    uid = str(user_id)
+    history = get_chat_history(uid)
+    history.append({"role": role, "text": text, "time": str(datetime.now())})
+    if len(history) > 30:
+        history.pop(0)
+    save_json(chat_history_file, chat_history)
+
+async def check_subscription(user_id, context):
     try:
-        member = await bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status not in ["left", "kicked", "banned"]
+        member = await context.bot.get_chat_member(REQUIRED_CHANNEL_ID, user_id)
+        return member.status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER]
     except:
         return False
 
-# ========== ИИ ФУНКЦИИ ==========
-async def generate_image(prompt: str) -> Optional[bytes]:
-    """Генерация картинки через g4f"""
-    try:
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.default,
-            provider=g4f.Provider.BingCreateImages,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        
-        if isinstance(response, str) and response.startswith("http"):
-            import requests
-            img_response = requests.get(response)
-            return img_response.content
-        return None
-    except Exception as e:
-        print(f"Image generation error: {e}")
-        
-        # Fallback: пробуем другой провайдер
-        try:
-            response = g4f.ChatCompletion.create(
-                model=g4f.models.gpt_4o,
-                provider=g4f.Provider.PollinationsAI,
-                messages=[{"role": "user", "content": f"Generate image: {prompt}"}],
-            )
-            return None
-        except:
-            return None
-
-async def extract_text_from_image(image_data: bytes, instruction: str = "") -> str:
-    """Извлечение текста из картинки через g4f с vision"""
-    try:
-        # Конвертируем в base64
-        image_base64 = base64.b64encode(image_data).decode('utf-8')
-        
-        prompt = instruction if instruction else "Извлеки весь текст с этого изображения. Верни только текст, без комментариев."
-        
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.gpt_4o,
-            provider=g4f.Provider.PollinationsAI,
-            messages=[{
-                "role": "user",
-                "content": f"{prompt}\n\n![image](data:image/jpeg;base64,{image_base64})"
-            }],
-        )
-        return response
-    except Exception as e:
-        print(f"Text extraction error: {e}")
-        try:
-            # Fallback
-            response = g4f.ChatCompletion.create(
-                model=g4f.models.gpt_4o,
-                provider=g4f.Provider.Liaobots,
-                messages=[{
-                    "role": "user",
-                    "content": [{"type": "text", "text": instruction or "Что написано на этой картинке?"},
-                               {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]
-                }],
-            )
-            return response
-        except:
-            return "Не удалось распознать текст на изображении."
-
-async def chat_response(message: str, context: list = None) -> str:
-    """Ответ бота в чате"""
-    try:
-        messages = [{"role": "system", "content": "Ты Izzzy AI — дружелюбный помощник. Отвечай кратко, с лёгким юмором и флиртом, как человек. Используй эмодзи. Не будь роботом. Иногда кокетничай."}]
-        
-        if context:
-            for ctx in context[-5:]:
-                role = "assistant" if ctx[2] == "bot" else "user"
-                messages.append({"role": role, "content": ctx[1]})
-        
-        messages.append({"role": "user", "content": message})
-        
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.gpt_4o,
-            provider=g4f.Provider.PollinationsAI,
-            messages=messages,
-        )
-        return response
-    except:
-        try:
-            response = g4f.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                provider=g4f.Provider.Liaobots,
-                messages=[{"role": "user", "content": message}],
-            )
-            return response
-        except:
-            return "😅 Что-то я задумалась... Повтори вопрос?"
-
-# ========== БОТ И ДИСПЕТЧЕР ==========
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-
-# ========== СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЕЙ ==========
-user_states = {}  # user_id: {"action": "generate_image" или "extract_text"}
-
-# ========== ХЕНДЛЕРЫ ==========
-
-# ----- КОМАНДЫ -----
-@dp.message(CommandStart())
-async def start_cmd(message: Message):
-    user = message.from_user
-    save_user(user.id, user.username, user.first_name, user.last_name)
-    
-    # В ЛИЧКЕ
-    if message.chat.type == ChatType.PRIVATE:
-        is_sub = await check_subscription(bot, user.id)
-        
-        if not is_sub:
-            await message.answer(
-                "⚠️ Для использования бота необходимо подписаться на канал:\n"
-                f"{CHANNEL_URL}\n\n"
-                "После подписки нажмите кнопку проверки.",
-                reply_markup=get_channel_keyboard()
-            )
-            return
-        
-        await message.answer(
-            "🍁 Добро пожаловать в Izzzy AI - твой бесплатный помощник, который всегда под рукой. "
-            "Я умею писать тексты, генерировать картинки, и многое другое, ознакомиться можно по кнопкам ниже",
-            reply_markup=get_main_keyboard()
-        )
-    
-    # В ГРУППЕ
+async def cerebras_request(messages, user_id=None, max_tokens=500, temperature=0.7):
+    if user_id:
+        user = get_user(user_id)
+        start_index = user.get("current_key_index", 0)
     else:
-        await message.answer(
-            "💠 В чатах я могу иногда общаться с пользователями, полный функционал доступен только в личных сообщениях со мной."
-        )
-
-@dp.message(Command("help"))
-async def help_cmd(message: Message):
-    help_text = (
-        "🍁 Я Izzzy AI - ваш бесплатный помощник который всегда рядом с вами.\n\n"
-        "- Я умею генерировать текст и общаться в чатах, группах\n"
-        "- Умею генерировать картинки\n"
-        "- Извлекать текст из фото\n\n"
-        f"🗨️ Мой функционал ещё маленький, но меня улучшают каждый день и добавляют новые функции\n\n"
-        f"👨‍💻 Разработчик: {DEV_USERNAME}"
-    )
-    await message.reply(help_text)
-
-# ----- ПРОВЕРКА ПОДПИСКИ (CALLBACK) -----
-@dp.callback_query(F.data == "check_sub")
-async def check_sub_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    is_sub = await check_subscription(bot, user_id)
+        start_index = 0
     
-    if is_sub:
-        await callback.message.delete()
-        await callback.message.answer(
-            "✅ Подписка подтверждена! Добро пожаловать!\n\n"
-            "🍁 Я Izzzy AI - твой бесплатный помощник, который всегда под рукой.",
-            reply_markup=get_main_keyboard()
-        )
-        await callback.answer("✅ Доступ открыт!")
-    else:
-        await callback.answer("❌ Вы ещё не подписаны на канал!", show_alert=True)
+    for attempt in range(len(CEREBRAS_API_KEYS)):
+        key_index = (start_index + attempt) % len(CEREBRAS_API_KEYS)
+        api_key = CEREBRAS_API_KEYS[key_index]
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    CEREBRAS_URL,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": CEREBRAS_MODEL,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "top_p": 1
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    
+                    if response.status == 200:
+                        result = await response.json()
+                        if user_id:
+                            user["current_key_index"] = key_index
+                            save_all()
+                        return result["choices"][0]["message"]["content"]
+                    
+                    elif response.status == 429:
+                        logging.warning(f"Ключ {key_index+1} лимит, переключение")
+                        continue
+                    else:
+                        continue
+                        
+        except Exception as e:
+            logging.error(f"Ошибка ключа {key_index+1}: {e}")
+            continue
+    
+    return None
 
-# ----- КНОПКИ МЕНЮ -----
-@dp.message(F.text == "🎨 Генерировать картинку")
-async def generate_image_btn(message: Message):
-    if message.chat.type != ChatType.PRIVATE:
-        await message.reply("🎨 Генерация картинок доступна только в личных сообщениях. Напиши мне в ЛС!")
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    if not await check_subscription(user.id, context):
+        keyboard = [[InlineKeyboardButton("📢 Подписаться", url=REQUIRED_CHANNEL_LINK)]]
+        await update.message.reply_text(
+            "❌ Чтобы пользоваться ботом, подпишись на канал:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
     
-    is_sub = await check_subscription(bot, message.from_user.id)
-    if not is_sub:
-        await message.answer("⚠️ Подпишитесь на канал!", reply_markup=get_channel_keyboard())
-        return
+    keyboard = [
+        [InlineKeyboardButton("💬 Диалог", callback_data="start_chat")],
+        [InlineKeyboardButton("🤖 Создать бота", callback_data="make_bot")],
+        [InlineKeyboardButton("📊 Профиль", callback_data="profile")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
+    ]
     
-    user_states[message.from_user.id] = {"action": "generate_image"}
-    await message.answer(
-        "🗨️ Киньте текст описав, что хотите на картинке, например:\n"
-        "Кот прыгает с самолёта"
+    await update.message.reply_text(
+        "🔥 Привет! Я Izzzy AI\n\n"
+        "✅ Отвечаю на вопросы\n"
+        "✅ Пишу код\n"
+        "✅ Создаю Telegram ботов\n\n"
+        "👇 Выбери действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-@dp.message(F.text == "📄 Извлечь текст")
-async def extract_text_btn(message: Message):
-    if message.chat.type != ChatType.PRIVATE:
-        await message.reply("📄 Извлечение текста доступно только в личных сообщениях. Напиши мне в ЛС!")
-        return
+async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    user = get_user(user_id)
     
-    is_sub = await check_subscription(bot, message.from_user.id)
-    if not is_sub:
-        await message.answer("⚠️ Подпишитесь на канал!", reply_markup=get_channel_keyboard())
-        return
+    remaining_text = DAILY_TEXT_LIMIT - user["text_requests_today"]
+    remaining_bots = DAILY_BOT_LIMIT - user["bot_requests_today"]
     
-    user_states[message.from_user.id] = {"action": "extract_text"}
-    await message.answer(
-        "🍁 Теперь киньте пожалуйста фотографию с текстом описав, что мне сделать с ним."
+    text = f"""📊 Профиль
+
+💬 Текстовые запросы: {user['text_requests_today']}/{DAILY_TEXT_LIMIT}
+⏳ Осталось: {remaining_text}
+
+🤖 Создание ботов: {user['bot_requests_today']}/{DAILY_BOT_LIMIT}
+⏳ Осталось: {remaining_bots}
+
+📈 Всего запросов: {user['total_requests']}
+📦 Всего ботов: {user['total_bots']}"""
+    
+    keyboard = [[InlineKeyboardButton("◀ Назад", callback_data="back_to_menu")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    text = f"""❓ Помощь
+
+Команды:
+/start - главное меню
+
+Лимиты:
+📝 {DAILY_TEXT_LIMIT} текстовых запросов в день
+🤖 {DAILY_BOT_LIMIT} созданий ботов в день
+
+🔄 Лимиты обнуляются в 00:00 каждый день"""
+    
+    keyboard = [[InlineKeyboardButton("◀ Назад", callback_data="back_to_menu")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("💬 Диалог", callback_data="start_chat")],
+        [InlineKeyboardButton("🤖 Создать бота", callback_data="make_bot")],
+        [InlineKeyboardButton("📊 Профиль", callback_data="profile")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
+    ]
+    
+    await query.edit_message_text(
+        "👇 Выбери действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-@dp.message(F.text == "📋 Мои запросы")
-async def my_requests_btn(message: Message):
-    if message.chat.type != ChatType.PRIVATE:
-        await message.reply("📋 История запросов доступна только в личных сообщениях.")
+async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if not await check_subscription(user_id, context):
+        await query.edit_message_text("❌ Подпишись на канал чтобы общаться")
         return
     
-    is_sub = await check_subscription(bot, message.from_user.id)
-    if not is_sub:
-        await message.answer("⚠️ Подпишитесь на канал!", reply_markup=get_channel_keyboard())
+    user = get_user(user_id)
+    if user["text_requests_today"] >= DAILY_TEXT_LIMIT:
+        await query.edit_message_text(
+            f"⚠️ Дневной лимит ({DAILY_TEXT_LIMIT}) достигнут\n"
+            "Жди завтра"
+        )
         return
     
-    requests = get_user_requests(message.from_user.id, 30)
-    
-    if not requests:
-        await message.answer("📋 У вас пока нет запросов.")
-        return
-    
-    text = "📋 <b>Ваши последние запросы:</b>\n\n"
-    for i, (req_type, prompt, created_at) in enumerate(requests, 1):
-        short_prompt = prompt[:50] + "..." if len(prompt) > 50 else prompt
-        text += f"{i}. [{req_type}] {short_prompt}\n   📅 {created_at[:16]}\n\n"
-    
-    await message.answer(text)
+    context.user_data["in_chat"] = True
+    await query.edit_message_text(
+        "💬 Режим диалога включен\n"
+        "Просто пиши сообщения, я отвечаю\n\n"
+        "Команда /exit - выйти из диалога"
+    )
 
-# ----- ОБРАБОТКА В ЛИЧКЕ -----
-@dp.message(F.chat.type == ChatType.PRIVATE)
-async def private_handler(message: Message):
-    user_id = message.from_user.id
+async def make_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
     
-    # Проверка подписки
-    is_sub = await check_subscription(bot, user_id)
-    if not is_sub:
-        await message.answer("⚠️ Подпишитесь на канал для использования бота!", reply_markup=get_channel_keyboard())
+    if not await check_subscription(user_id, context):
+        await query.edit_message_text("❌ Подпишись на канал чтобы создавать ботов")
         return
     
-    state = user_states.get(user_id, {})
-    action = state.get("action")
+    user = get_user(user_id)
+    if user["bot_requests_today"] >= DAILY_BOT_LIMIT:
+        await query.edit_message_text(
+            f"⚠️ Дневной лимит ({DAILY_BOT_LIMIT}) созданий ботов достигнут\n"
+            "Жди завтра"
+        )
+        return
     
-    # ГЕНЕРАЦИЯ КАРТИНКИ
-    if action == "generate_image":
-        if not message.text:
-            await message.answer("❌ Отправьте текстовое описание картинки.")
-            return
-        
-        prompt = message.text
-        save_request(user_id, "generate_image", prompt)
-        
-        wait_msg = await message.answer("⚡ Подождите пару секунд, идёт процесс генерации...")
-        
-        image_data = await generate_image(prompt)
-        
-        await wait_msg.delete()
-        
-        if image_data:
-            caption = f"✅ Готова\n🇳🇵 Наш канал: {CHANNEL_URL}"
-            await message.answer_photo(types.BufferedInputFile(image_data, filename="generated.jpg"), caption=caption)
-            save_request(user_id, "generate_image", prompt, "success")
-        else:
-            await message.answer("❌ Не удалось сгенерировать изображение. Попробуйте другой запрос.")
-            save_request(user_id, "generate_image", prompt, "failed")
-        
-        user_states.pop(user_id, None)
+    await query.edit_message_text(
+        "🤖 Опиши какого бота хочешь создать\n\n"
+        "Пример:\n"
+        "Сделай бота который приветствует пользователя, "
+        "отвечает на /start, имеет кнопки 'О нас' и 'Контакты'"
+    )
+    context.user_data["awaiting_bot_prompt"] = True
+
+async def handle_bot_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_bot_prompt"):
+        return
     
-    # ИЗВЛЕЧЕНИЕ ТЕКСТА
-    elif action == "extract_text":
-        if not message.photo:
-            if message.text:
-                await message.answer("💠 Фотография не обнаружена...")
-            else:
-                await message.answer("📷 Отправьте фотографию с текстом.")
-            return
-        
-        # Есть фото
-        instruction = message.caption or ""
-        
-        if not instruction:
-            await message.answer("⚠️ Фотография обнаружена, без текста я не смогу выполнить...")
-            return
-        
-        wait_msg = await message.answer("⚡ Выполняю запрос, подождите пару секунд....")
-        
-        # Скачиваем фото
-        file_id = message.photo[-1].file_id
-        file = await bot.get_file(file_id)
-        image_data = await bot.download_file(file.file_path)
-        
-        result = await extract_text_from_image(image_data.read(), instruction)
-        
-        await wait_msg.delete()
-        await message.answer(f"📄 <b>Результат:</b>\n\n{result}")
-        
-        save_request(user_id, "extract_text", instruction, result[:500] if result else None)
-        user_states.pop(user_id, None)
+    user_id = update.effective_user.id
+    prompt_text = update.message.text
     
-    # ОБЫЧНОЕ СООБЩЕНИЕ
+    await update.message.reply_text("⏳ Генерирую код бота... (может занять до минуты)")
+    
+    user = get_user(user_id)
+    
+    # Системный промпт для генерации бота
+    system_prompt = """Ты эксперт по написанию Telegram ботов на Python. Сгенерируй полноценного бота по описанию пользователя.
+
+Требования:
+- Используй python-telegram-bot версии 20.x
+- Код должен быть рабочим без ошибок
+- Раздели на несколько файлов: main.py, config.py, handlers.py, keyboards.py
+- Добавь requirements.txt
+- Напиши инструкцию по запуску в файл README.txt (бесплатные хостинги: PythonAnywhere, Render, Railway, Koyeb)
+
+Формат ответа:
+===ФАЙЛ: main.py===
+(код)
+===ФАЙЛ: config.py===
+(код)
+===ФАЙЛ: handlers.py===
+(код)
+===ФАЙЛ: keyboards.py===
+(код)
+===ФАЙЛ: requirements.txt===
+(список библиотек)
+===ФАЙЛ: README.txt===
+(инструкция по запуску)
+
+Используй понятные имена переменных, добавляй комментарии."""
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Описание бота: {prompt_text}"}
+    ]
+    
+    response = await cerebras_request(messages, user_id, max_tokens=5000, temperature=0.7)
+    
+    if not response:
+        await update.message.reply_text("❌ Ошибка генерации, попробуй позже")
+        context.user_data["awaiting_bot_prompt"] = False
+        return
+    
+    # Парсим файлы
+    files = {}
+    current_file = None
+    current_content = []
+    
+    for line in response.split('\n'):
+        file_match = re.match(r'===ФАЙЛ:\s*(.+?)===', line)
+        if file_match:
+            if current_file:
+                files[current_file] = '\n'.join(current_content)
+            current_file = file_match.group(1).strip()
+            current_content = []
+        elif current_file:
+            current_content.append(line)
+    
+    if current_file:
+        files[current_file] = '\n'.join(current_content)
+    
+    # Создаем ZIP
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for filename, content in files.items():
+            zip_file.writestr(filename, content)
+    
+    zip_buffer.seek(0)
+    
+    user["bot_requests_today"] += 1
+    user["total_bots"] += 1
+    save_all()
+    
+    await update.message.reply_document(
+        document=zip_buffer,
+        filename=f"bot_{user_id}.zip",
+        caption=f"✅ Готово! Бот сгенерирован\nФайлов: {len(files)}"
+    )
+    
+    context.user_data["awaiting_bot_prompt"] = False
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_message = update.message.text
+    
+    if user_message.startswith('/'):
+        return
+    
+    # Если не в диалоге
+    if not context.user_data.get("in_chat"):
+        return
+    
+    if not await check_subscription(user_id, context):
+        await update.message.reply_text("❌ Подпишись на канал")
+        return
+    
+    user = get_user(user_id)
+    if user["text_requests_today"] >= DAILY_TEXT_LIMIT:
+        await update.message.reply_text(f"⚠️ Лимит {DAILY_TEXT_LIMIT} запросов в день исчерпан")
+        return
+    
+    # Получаем историю
+    history = get_chat_history(user_id)
+    history_messages = []
+    for h in history[-20:]:
+        history_messages.append({"role": "user" if h["role"] == "user" else "assistant", "content": h["text"]})
+    
+    messages = [
+        {"role": "system", "content": "Ты дружелюбный AI ассистент. Отвечай кратко, по делу, используй нормальные эмодзи (✅, 🔥, ⚠️, 📊, 💬, 🤖, ❓, ◀)."},
+        *history_messages,
+        {"role": "user", "content": user_message}
+    ]
+    
+    await update.message.chat.send_action(action="typing")
+    
+    response = await cerebras_request(messages, user_id, max_tokens=500, temperature=0.8)
+    
+    if response:
+        user["text_requests_today"] += 1
+        user["total_requests"] += 1
+        save_all()
+        
+        add_to_history(user_id, "user", user_message)
+        add_to_history(user_id, "assistant", response)
+        
+        await update.message.reply_text(response)
     else:
-        # Просто общаемся с ИИ
-        wait_msg = await message.answer("⚡ Думаю...")
-        response = await chat_response(message.text)
-        await wait_msg.delete()
-        await message.answer(response)
-        save_request(user_id, "chat", message.text, response[:500])
+        await update.message.reply_text("❌ Ошибка API, попробуй позже")
 
-# ----- ОБРАБОТКА В ГРУППАХ -----
-@dp.message(F.chat.type.in_([ChatType.GROUP, ChatType.SUPERGROUP]))
-async def group_handler(message: Message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    text = message.text or message.caption or ""
-    
-    if not text:
-        return
-    
-    # Сохраняем сообщение
-    save_chat_message(chat_id, user_id, text, "user")
-    
-    # Считаем сообщения для рандомных ответов
-    group_message_counter[chat_id] = group_message_counter.get(chat_id, 0) + 1
-    
-    # Проверяем, обращаются ли к боту
-    bot_names = ["иззи", "еззи", "izzzy", "izzy", "изи", "бот"]
-    text_lower = text.lower()
-    
-    mentioned = any(name in text_lower for name in bot_names)
-    has_question = "?" in text
-    is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.id == bot.id
-    
-    should_respond = False
-    
-    if mentioned or has_question or is_reply_to_bot:
-        should_respond = True
-    elif group_message_counter[chat_id] % random.randint(3, 5) == 0:
-        # Рандомный ответ раз в 3-5 сообщений
-        should_respond = True
-    
-    if should_respond:
-        # Получаем контекст
-        context = get_chat_context(chat_id, 10)
-        
-        # Определяем стиль ответа
-        styles = ["friendly", "flirty", "funny"]
-        style = random.choice(styles)
-        
-        style_prompt = {
-            "friendly": "Ответь дружелюбно и кратко.",
-            "flirty": "Ответь с лёгким флиртом и кокетством, как девушка или парень.",
-            "funny": "Ответь с юмором, коротко и смешно."
-        }
-        
-        full_prompt = f"{style_prompt[style]}\n\nСообщение: {text}"
-        response = await chat_response(full_prompt, context)
-        
-        await asyncio.sleep(random.uniform(0.5, 2.0))
-        await message.reply(response)
-        
-        save_chat_message(chat_id, bot.id, response, "bot")
-        
-        # Иногда генерируем картинку в тему
-        if random.random() < 0.1:  # 10% шанс
-            try:
-                img_prompt = f"Сгенерируй картинку в тему обсуждения: {text[:200]}"
-                image_data = await generate_image(img_prompt)
-                if image_data:
-                    await asyncio.sleep(1)
-                    await message.reply_photo(
-                        types.BufferedInputFile(image_data, filename="chat_image.jpg"),
-                        caption="🎨 Сгенерировала картиночку в тему беседы 😊"
-                    )
-            except:
-                pass
+async def exit_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["in_chat"] = False
+    await update.message.reply_text("👋 Выход из диалога. /start для меню")
 
-# ========== ЗАПУСК ==========
-async def main():
-    print("🍁 Izzzy AI запущен!")
-    await dp.start_polling(bot)
+def main():
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("exit", exit_chat))
+    
+    app.add_handler(CallbackQueryHandler(profile_callback, pattern="profile"))
+    app.add_handler(CallbackQueryHandler(help_callback, pattern="help"))
+    app.add_handler(CallbackQueryHandler(start_chat_callback, pattern="start_chat"))
+    app.add_handler(CallbackQueryHandler(make_bot_callback, pattern="make_bot"))
+    app.add_handler(CallbackQueryHandler(back_to_menu, pattern="back_to_menu"))
+    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_bot_prompt))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("✅ Бот запущен")
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
